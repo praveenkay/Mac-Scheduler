@@ -264,6 +264,28 @@ async function openDrawer(id) {
   }
 }
 
+function whatItDoes(t) {
+  const p = t.parsed || {};
+  const parts = [];
+  if (t.type === 'cronfile') {
+    const n = (t.jobs || []).length;
+    parts.push(`Stores ${n} cron job${n === 1 ? '' : 's'} in this user's crontab.`);
+    const cmds = (t.jobs || []).slice(0, 3).map((j) => j.command).filter(Boolean);
+    if (cmds.length) parts.push(`Commands: ${cmds.join('; ')}${(t.jobs || []).length > 3 ? ' …' : ''}`);
+    return parts.join(' ');
+  }
+  const prog = p.ProgramArguments ? p.ProgramArguments.join(' ') : (p.Program || '');
+  if (prog) parts.push(`Runs: ${prog}`);
+  parts.push(`Schedule: ${scheduleLabel(t)}.`);
+  if (p.KeepAlive) parts.push('Launchd keeps it running (restarts after exit).');
+  if (p.RunAtLoad) parts.push('Starts when loaded.');
+  if (p.WorkingDirectory) parts.push(`Working directory: ${p.WorkingDirectory}.`);
+  if (p.StandardOutPath || p.StandardErrorPath) {
+    parts.push(`Logs: ${[p.StandardOutPath, p.StandardErrorPath].filter(Boolean).join(', ')}`);
+  }
+  return parts.join(' ');
+}
+
 function drawerInfoBlocks(t) {
   const st = taskStatus(t);
   const statusEl = st === 'running' ? '<span class="val" style="color:var(--green)">Running' + (t.pid ? ` (PID ${t.pid})` : '') + '</span>'
@@ -271,6 +293,12 @@ function drawerInfoBlocks(t) {
     : st === 'stopped' ? '<span class="val" style="color:var(--red)">Stopped / not loaded</span>'
     : '<span class="val">Unknown</span>';
   return `
+    <div class="section">
+      <div class="section-title">What this task does</div>
+      <div class="info-item full" style="grid-column:1/-1;background:var(--bg-soft)">
+        <div class="val" style="font-weight:400;font-size:13px;line-height:1.5">${esc(whatItDoes(t))}</div>
+      </div>
+    </div>
     <div class="section">
       <div class="section-title">Overview</div>
       <div class="info-grid">
@@ -783,3 +811,25 @@ async function openSettings() {
 }
 
 $('#settingsBtn').addEventListener('click', openSettings);
+$('#settingsBtn2').addEventListener('click', openSettings);
+
+// Sidebar toggle for narrow windows
+const sidebarToggleBtn = $('#sidebarToggle');
+const sidebar = $('#sidebar');
+function syncSidebar() {
+  const narrow = window.matchMedia('(max-width: 900px)').matches;
+  if (narrow) {
+    sidebarToggleBtn.style.display = 'inline-flex';
+  } else {
+    sidebarToggleBtn.style.display = 'none';
+  }
+  if (sidebar.style.display !== 'none') sidebar.style.display = 'flex';
+}
+if (sidebarToggleBtn) {
+  sidebarToggleBtn.addEventListener('click', () => {
+    sidebar.style.display = sidebar.style.display === 'none' ? 'flex' : 'none';
+  });
+}
+window.matchMedia('(max-width: 900px)').addEventListener('change', syncSidebar);
+window.addEventListener('resize', syncSidebar);
+syncSidebar();

@@ -67,6 +67,10 @@ body {
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+  /* Native WKWebView with a transparent titlebar can be a few px taller than
+     the visible area; a tiny bottom safety allows the last row to scroll
+     into view instead of being clipped. */
+  padding-bottom: 8px;
 }
 button { font-family: inherit; cursor: pointer; }
 input, select, textarea { font-family: inherit; }
@@ -75,7 +79,20 @@ input, select, textarea { font-family: inherit; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
 ::-webkit-scrollbar-track { background: transparent; }
 
-#app { display: grid; grid-template-columns: 264px 1fr; height: 100vh; }
+#app {
+  display: grid;
+  grid-template-columns: 264px minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
+}
+/* Minimal correct flex/grid: children must be allowed to shrink so their
+   internal scrollbars appear instead of clipping past 100vh. */
+#main,
+#sidebar,
+#content {
+  min-height: 0;
+  min-width: 0;
+}
 
 /* ---------- Sidebar ---------- */
 #sidebar {
@@ -363,6 +380,13 @@ nav { display: flex; flex-direction: column; gap: 3px; overflow-y: auto; flex: 1
   border-radius: 9px; padding: 12px; resize: vertical; outline: none; white-space: pre;
 }
 #rawEditor:focus { border-color: var(--accent); }
+#cronEditor {
+  width: 100%; min-height: 200px;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.55;
+  background: var(--bg-soft); color: var(--text); border: 1px solid var(--border);
+  border-radius: 9px; padding: 12px; resize: vertical; outline: none; white-space: pre;
+}
+#cronEditor:focus { border-color: var(--accent); }
 
 /* ---------- Cron editor ---------- */
 .cron-list { display: flex; flex-direction: column; gap: 8px; }
@@ -424,8 +448,14 @@ nav { display: flex; flex-direction: column; gap: 3px; overflow-y: auto; flex: 1
 @keyframes shimmer { to { background-position: -200% 0; } }
 
 @media (max-width: 900px) {
-  #app { grid-template-columns: 1fr; }
-  #sidebar { display: none; }
+  #app { grid-template-columns: 1fr; overflow-y: auto; }
+  #sidebar {
+    display: flex;
+    max-height: 46vh;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 10px;
+  }
   #searchInput { width: 160px; }
   .task-grid { grid-template-columns: 1fr; }
 }

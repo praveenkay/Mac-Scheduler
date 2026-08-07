@@ -45,9 +45,9 @@
         <span id="stat-sched" class="stat-num">0</span><span class="stat-cap">scheduled</span>
       </div>
       <div class="btn-row">
+        <button id="themeBtn" class="btn btn-ghost" title="Toggle theme">◐ Dark</button>
         <button id="refreshBtn" class="btn btn-ghost" title="Refresh">↻ Refresh</button>
-        <button id="settingsBtn" class="btn btn-ghost" title="Settings & permissions">⚙</button>
-        <button id="themeBtn" class="btn btn-ghost" title="Toggle theme">◐</button>
+        <button id="settingsBtn" class="btn btn-ghost" title="Settings & permissions">⚙ Settings</button>
       </div>
     </div>
   </aside>
@@ -56,10 +56,14 @@
   <main id="main">
     <header id="topbar">
       <div class="topbar-left">
-        <h2 id="viewTitle">All Tasks</h2>
-        <span class="view-desc" id="viewDesc">Every scheduled job on this Mac</span>
+        <button id="sidebarToggle" class="btn btn-ghost icon-btn" title="Show/hide sources sidebar" style="display:none">☰</button>
+        <div>
+          <h2 id="viewTitle">All Tasks</h2>
+          <span class="view-desc" id="viewDesc">Every scheduled job on this Mac</span>
+        </div>
       </div>
       <div class="topbar-right">
+        <button id="settingsBtn2" class="btn btn-ghost" title="Settings & permissions">⚙ Settings</button>
         <div class="search-wrap">
           <svg class="search-ic" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/></svg>
           <input id="searchInput" type="text" placeholder="Search tasks…" />

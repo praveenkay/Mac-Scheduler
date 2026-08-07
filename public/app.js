@@ -10,12 +10,13 @@ const state = {
   filter: 'all',
   search: '',
   theme: localStorage.getItem('macsched-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
+  autoRefresh: localStorage.getItem('macsched-autorefresh') === '1',
   currentId: null,
   isCron: false,
 };
 
-const $ = (sel) => document.querySelector(sel);
-const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+const $ = (sel, scope = document) => scope.querySelector(sel);
+const $$ = (sel, scope = document) => Array.from(scope.querySelectorAll(sel));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 document.documentElement.setAttribute('data-theme', state.theme);
@@ -757,46 +758,139 @@ $$('#filterChips .chip').forEach((c) => {
 });
 
 // ---------- Init ----------
+// ---------- Auto-refresh ----------
+let autoRefreshTimer = null;
+function setupAutoRefresh() {
+  if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+  if (state.autoRefresh) {
+    autoRefreshTimer = setInterval(() => {
+      if (!$('#drawer').hidden) return; // avoid clobbering an open editor
+      refresh();
+    }, 15000);
+  }
+}
+
 (async function init() {
   $('#brand-sub').textContent = navigator.platform || 'macOS';
   await refresh();
+  setupAutoRefresh();
 })();
 
-// ---------- Settings (keep-alive + permissions) ----------
+// ---------- Settings (tabbed panel) ----------
 async function openSettings() {
   let ka = { enabled: false };
+  let info = { version: '—', user: '—', host: '—' };
+  let srcs = [];
   try { ka = await api('/keepalive'); } catch {}
+  try { info = await api('/'); } catch {}
+  try { srcs = (await api('/sources')).sources; } catch {}
+
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.innerHTML = `
-    <div class="modal" style="width:460px">
-      <h3>Settings & Permissions</h3>
-      <p class="modal-desc">Keep Mac Scheduler running in the background and give it access to system scheduled-task files.</p>
-
-      <div class="toggle-row"><div>
-          <label>Run in background (keep alive)</label>
-          <div class="desc">Keeps the server running even when the app window is closed</div>
+    <div class="modal settings-modal">
+      <div class="settings-head">
+        <div class="settings-title">
+          <div class="settings-icon">⚙</div>
+          <div>
+            <h3>Settings</h3>
+            <p class="modal-desc" style="margin:0">Mac Scheduler for ${esc(info.user)}@${esc(info.host)}</p>
+          </div>
         </div>
-        <label class="switch"><input type="checkbox" id="kaToggle" ${ka.enabled ? 'checked' : ''}><span class="slider"></span></label>
+        <button class="btn btn-ghost icon-btn" id="settingsClose">✕</button>
       </div>
 
-      <div class="section" style="margin-top:16px">
-        <div class="section-title">File access</div>
-        <div class="info-item full" style="margin-bottom:10px">
-          <label>Why?</label>
-          <div class="val" style="font-weight:400;font-size:12.5px">Mac Scheduler reads <b>~/Library/LaunchAgents</b>, <b>/Library/LaunchAgents</b>, <b>/Library/LaunchDaemons</b> and cron tables. Modern macOS protects these — you may need Full Disk Access.</div>
+      <div class="settings-tabs">
+        <button class="settings-tab active" data-tab="general">General</button>
+        <button class="settings-tab" data-tab="access">Access</button>
+        <button class="settings-tab" data-tab="about">About</button>
+      </div>
+
+      <div class="settings-body">
+
+        <!-- GENERAL -->
+        <div class="settings-pane active" data-pane="general">
+          <div class="section-title">Background</div>
+          <div class="toggle-row">
+            <div>
+              <label>Run in background</label>
+              <div class="desc">Keeps the server alive when the window is closed, so tasks stay visible on next launch</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="kaToggle" ${ka.enabled ? 'checked' : ''}><span class="slider"></span></label>
+          </div>
+
+          <div class="section-title" style="margin-top:18px">Appearance</div>
+          <div class="toggle-row">
+            <div>
+              <label>Dark mode</label>
+              <div class="desc">Toggles the color theme</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="themeToggle" ${state.theme === 'dark' ? 'checked' : ''}><span class="slider"></span></label>
+          </div>
+
+          <div class="section-title" style="margin-top:18px">Behavior</div>
+          <div class="toggle-row">
+            <div>
+              <label>Auto-refresh task list</label>
+              <div class="desc">Re-fetches tasks every 15 seconds so status changes appear automatically</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="autoRefreshToggle" ${state.autoRefresh ? 'checked' : ''}><span class="slider"></span></label>
+          </div>
         </div>
-        <button class="btn btn-block" id="permBtn">🔓 Open Full Disk Access settings</button>
-        <div class="hint" style="margin-top:6px">In System Settings → Privacy & Security → Files and Folders → enable <b>Mac Scheduler</b> (and Full Disk Access if prompted).</div>
+
+        <!-- ACCESS -->
+        <div class="settings-pane" data-pane="access">
+          <div class="section-title">Why access is needed</div>
+          <div class="info-item full" style="margin-bottom:12px">
+            <div class="val" style="font-weight:400;font-size:12.5px;line-height:1.55">macOS protects scheduled-task files. Your own <b>~/Library/LaunchAgents</b> and crontab are always readable. System folders need <b>Full Disk Access</b> (and editing them needs administrator privileges).</div>
+          </div>
+
+          <div class="section-title">Scheduled task sources</div>
+          <div class="src-status-list" id="srcStatusList">
+            ${srcs.map((s) => `
+              <div class="src-status">
+                <span class="mini-dot" style="background:${s.needsSudo ? 'var(--amber)' : 'var(--green)'}"></span>
+                <span class="src-status-name">${esc(s.name)}</span>
+                <span class="src-status-flag">${s.needsSudo ? 'sudo' : 'user'}</span>
+                <span class="src-status-desc">${esc(s.desc)}</span>
+              </div>`).join('')}
+          </div>
+
+          <button class="btn btn-block" id="permBtn">🔓 Open Full Disk Access settings</button>
+          <div class="hint" style="margin-top:6px">System Settings → Privacy & Security → Files and Folders → enable <b>Mac Scheduler</b>, then quit and reopen the app.</div>
+        </div>
+
+        <!-- ABOUT -->
+        <div class="settings-pane" data-pane="about">
+          <div class="info-grid">
+            <div class="info-item"><label>Version</label><div class="val">v${esc(info.version)}</div></div>
+            <div class="info-item"><label>Server</label><div class="val mono">127.0.0.1:8742</div></div>
+            <div class="info-item"><label>User</label><div class="val mono">${esc(info.user)}</div></div>
+            <div class="info-item"><label>Host</label><div class="val mono">${esc(info.host)}</div></div>
+            <div class="info-item full"><label>Data sources</label><div class="val">${srcs.length} launchd + cron locations</div></div>
+          </div>
+          <div class="hint" style="margin-top:12px">Mac Scheduler runs entirely on this computer — nothing leaves it.</div>
+        </div>
+
       </div>
 
       <div class="modal-actions">
-        <button class="btn btn-ghost" id="settingsClose">Close</button>
+        <button class="btn btn-ghost" id="settingsClose2">Close</button>
       </div>
     </div>`;
   $('#modalRoot').appendChild(modal);
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
-  $('#settingsClose').addEventListener('click', () => modal.remove());
+  const close = () => modal.remove();
+  $('#settingsClose').addEventListener('click', close);
+  $('#settingsClose2').addEventListener('click', close);
+
+  // Tabs
+  $$('.settings-tab', modal).forEach((tab) => {
+    tab.addEventListener('click', () => {
+      $$('.settings-tab', modal).forEach((t) => t.classList.toggle('active', t === tab));
+      $$('.settings-pane', modal).forEach((p) => p.classList.toggle('active', p.dataset.pane === tab.dataset.tab));
+    });
+  });
 
   $('#kaToggle').addEventListener('change', async (e) => {
     try {
@@ -804,6 +898,20 @@ async function openSettings() {
       toast(e.target.checked ? 'Background mode enabled' : 'Background mode disabled', 'success');
     } catch (err) { toast(err.message, 'error', 6000); e.target.checked = !e.target.checked; }
   });
+
+  $('#themeToggle').addEventListener('change', (e) => {
+    state.theme = e.target.checked ? 'dark' : 'light';
+    localStorage.setItem('macsched-theme', state.theme);
+    document.documentElement.setAttribute('data-theme', state.theme);
+  });
+
+  $('#autoRefreshToggle').addEventListener('change', (e) => {
+    state.autoRefresh = e.target.checked;
+    localStorage.setItem('macsched-autorefresh', state.autoRefresh ? '1' : '0');
+    setupAutoRefresh();
+    toast(state.autoRefresh ? 'Auto-refresh on' : 'Auto-refresh off', 'success');
+  });
+
   $('#permBtn').addEventListener('click', async () => {
     try { await api('/permissions', { method: 'POST' }); toast('Opening System Settings…', 'info'); }
     catch (err) { toast(err.message, 'error', 6000); }

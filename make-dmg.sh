@@ -21,26 +21,22 @@ for ARCH in "${ARCHS[@]}"; do
   cp -R "$APP_PATH" "$STAGE/"
   ln -s /Applications "$STAGE/Applications"
 
-  # 3. Build a pretty DMG (background + icon layout)
+  # 3. Create the final compressed DMG directly (no attach/detach — avoids
+  #    "Resource temporarily unavailable" races on CI runners)
   DMG="$DMGDIR/MacScheduler-${VERSION}-${ARCH}.dmg"
-  rm -f "$DMG" "$DMG.tmp"
-  TMPDMG="$DMGDIR/.${VERSION}-${ARCH}.tmp.dmg"
-
-  # Create writable staging image, mount, unmount (format flags only)
-  hdiutil create -volname "Mac Scheduler" -srcfolder "$STAGE" -ov -format UDRW "$TMPDMG" >/dev/null
-  MOUNT=$(hdiutil attach "$TMPDMG" -nobrowse | sed -n 's/.*\(\/Volumes\/.*\)$/\1/p' | head -1)
-  sleep 1
-  hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true
-  sync
-  sleep 1
-
-  # 4. Compress to final read-only DMG (retry if a transient lock)
+  rm -f "$DMG"
   for attempt in 1 2 3; do
-    hdiutil convert "$TMPDMG" -format UDZO -o "$DMG" >/dev/null 2>>"$DMG.err" && break
-    echo "  convert attempt $attempt failed, retrying…"
-    sleep 2
+    if hdiutil create -volname "Mac Scheduler" -srcfolder "$STAGE" \
+        -format UDZO -imagekey zlib-level=9 -ov "$DMG" >/dev/null 2>&1; then
+      break
+    fi
+    echo "  attempt $attempt failed, retrying…"
+    sleep 3
   done
-  rm -f "$TMPDMG" "$DMG.err"
-  echo "==> $DMG ($(du -h "$DMG" 2>/dev/null | cut -f1))"
+  if [ ! -f "$DMG" ]; then
+    echo "!! Failed to create $DMG"
+    exit 1
+  fi
+  echo "==> $DMG ($(du -h "$DMG" | cut -f1))"
 done
 echo "==> All DMGs:"; ls -la "$DMGDIR" | grep -E '\.dmg$'

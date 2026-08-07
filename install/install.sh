@@ -50,6 +50,9 @@ echo "==> Registering app & URL scheme"
 echo "==> Removing quarantine (unsigned app)"
 xattr -dr com.apple.quarantine "/Applications/Mac Scheduler.app" 2>/dev/null || true
 
+echo "==> Creating app config folder"
+mkdir -p "$HOME/.config/macscheduler"
+
 echo "==> Granting permissions + enabling keep-alive"
 SCRIPT="$HOME/.macscheduler-installer.sh"
 curl -fsSL "https://raw.githubusercontent.com/$REPO/main/install/install-permissions.sh" -o "$SCRIPT" 2>/dev/null \

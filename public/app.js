@@ -11,6 +11,8 @@ const state = {
   search: '',
   theme: localStorage.getItem('macsched-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
   autoRefresh: localStorage.getItem('macsched-autorefresh') === '1',
+  view: localStorage.getItem('macsched-view') || 'grid',
+  sort: localStorage.getItem('macsched-sort') || 'status',
   currentId: null,
   isCron: false,
 };
@@ -168,7 +170,17 @@ function visibleTasks() {
       programPreview(t).toLowerCase().includes(q)
     );
   }
-  return list.sort((a, b) => (a.label || '').localeCompare(b.label || ''));
+  const rank = { running: 0, scheduled: 1, stopped: 2, unknown: 3 };
+  const cmp = (a, b) => (rank[taskStatus(a)] ?? 3) - (rank[taskStatus(b)] ?? 3);
+  return list.sort((a, b) => {
+    if (state.sort === 'status') {
+      const d = cmp(a, b);
+      if (d !== 0) return d;
+      return (a.label || '').localeCompare(b.label || '');
+    }
+    if (state.sort === 'source') return (a.source || '').localeCompare(b.source || '') || cmp(a, b);
+    return (a.label || '').localeCompare(b.label || '') || cmp(a, b);
+  });
 }
 
 // ---------- Render main ----------
@@ -190,8 +202,10 @@ function render() {
   const grid = $('#taskList');
   $('#emptyState').hidden = list.length > 0;
   grid.innerHTML = '';
+  grid.className = state.view === 'list' ? 'task-list' : 'task-grid';
+  $$('#viewSeg .seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
 
-  for (const t of list) grid.appendChild(taskCard(t));
+  for (const t of list) grid.appendChild(state.view === 'list' ? taskRow(t) : taskCard(t));
 }
 
 function taskCard(t) {
@@ -236,6 +250,36 @@ function taskCard(t) {
   return el;
 }
 
+function taskRow(t) {
+  const st = taskStatus(t);
+  const el = document.createElement('div');
+  el.className = 'task-row';
+  el.dataset.status = st;
+  el.dataset.id = t.id;
+  const isCron = t.type === 'cronfile';
+  const iconBg = {
+    'user-agents': 'var(--green-bg)', 'system-agents': 'var(--blue-bg)',
+    'system-daemons': 'var(--purple-bg)', 'user-cron': 'var(--amber-bg)', 'system-cron': 'var(--red-bg)',
+  }[t.source] || 'var(--bg-soft)';
+  const icon = isCron ? '🗓' : '⚙';
+  const statusBadge = st === 'running' ? '<span class="card-status status-running">● Running</span>'
+    : st === 'scheduled' ? '<span class="card-status status-scheduled">● Scheduled</span>'
+    : st === 'stopped' ? '<span class="card-status status-stopped">■ Stopped</span>'
+    : '<span class="card-status status-unknown">Unknown</span>';
+  el.innerHTML = `
+    <span class="list-status"></span>
+    <div class="list-icon" style="background:${iconBg}">${icon}</div>
+    <div class="list-main">
+      <div class="list-name">${esc(t.label || t.name)}</div>
+      <div class="list-prog">${esc(programPreview(t))}</div>
+    </div>
+    <div class="list-sched">${esc(scheduleLabel(t))}</div>
+    ${statusBadge}
+    <div class="list-src">${esc(sourceMeta(t.source).name)}</div>`;
+  el.addEventListener('click', () => openDrawer(t.id));
+  return el;
+}
+
 function fmtTime(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -276,15 +320,56 @@ function whatItDoes(t) {
     return parts.join(' ');
   }
   const prog = p.ProgramArguments ? p.ProgramArguments.join(' ') : (p.Program || '');
-  if (prog) parts.push(`Runs: ${prog}`);
-  parts.push(`Schedule: ${scheduleLabel(t)}.`);
-  if (p.KeepAlive) parts.push('Launchd keeps it running (restarts after exit).');
-  if (p.RunAtLoad) parts.push('Starts when loaded.');
-  if (p.WorkingDirectory) parts.push(`Working directory: ${p.WorkingDirectory}.`);
+  // Friendly "what it does": lead with the program name in words, then schedule.
+  const progName = friendlyName(p);
+  const runDesc = t.loaded ? 'This task is currently running' : 'This task is a scheduled job';
+  const schedNarrative = humanSchedule(p);
+  if (progName) {
+    parts.push(`${runDesc} that launches ${progName}.`);
+  } else if (prog) {
+    parts.push(`${runDesc}.`);
+  }
+  if (schedNarrative) parts.push(schedNarrative);
+  else if (prog) parts.push(`Schedule: ${scheduleLabel(t)}.`);
+  if (p.KeepAlive) parts.push('launchd keeps it alive — it restarts automatically if it exits.');
+  if (p.RunAtLoad) parts.push('It starts right away when loaded.');
+  if (p.WorkingDirectory) parts.push(`It runs from the directory “${p.WorkingDirectory}”.`);
   if (p.StandardOutPath || p.StandardErrorPath) {
-    parts.push(`Logs: ${[p.StandardOutPath, p.StandardErrorPath].filter(Boolean).join(', ')}`);
+    parts.push(`Its output and errors are logged to ${[p.StandardOutPath, p.StandardErrorPath].filter(Boolean).join(' and ')}.`);
   }
   return parts.join(' ');
+}
+function friendlyName(p) {
+  const a = Array.isArray(p.ProgramArguments) ? p.ProgramArguments : [p.Program].filter(Boolean);
+  const head = a[0] || '';
+  const base = String(head).split('/').pop();
+  if (['say', 'bash', 'sh', 'node', 'python3', 'zsh'].includes(base) && a[1]) {
+    return `“${a.slice(1).join(' ')}” (via ${base})`;
+  }
+  return base || head;
+}
+function humanSchedule(p) {
+  const sci = p.StartCalendarInterval;
+  if (Array.isArray(sci)) return `It is scheduled to run at ${sci.length} specific time${sci.length > 1 ? 's' : ''}.`;
+  if (sci) {
+    const when = [];
+    if (sci.Weekday !== undefined) when.push('on ' + weekdayName(sci.Weekday));
+    if (sci.Hour !== undefined) when.push('at ' + pad(sci.Hour) + ':' + pad(sci.Minute ?? 0));
+    else if (sci.Minute !== undefined) when.push(`at minute ${sci.Minute} of the hour`);
+    if (sci.Day !== undefined) when.push('on the ' + sci.Day + 'th');
+    if (sci.Month !== undefined) when.push('in ' + monthName(sci.Month));
+    const t = when.length ? when.join(' ') : '';
+    return t ? `It runs ${t}.` : '';
+  }
+  if (p.StartInterval) {
+    return `It runs every ${fmtDur(p.StartInterval)}.`;
+  }
+  if (p.RunAtLoad) return 'It starts once, when this agent is loaded.';
+  if (p.KeepAlive && p.KeepAlive !== 'false') return 'It is always active.';
+  if (p.WatchPaths) return `It runs whenever one of ${p.WatchPaths.length} watched files or folders changes.`;
+  if (p.QueueDirectories) return `It runs whenever a file is added to one of its ${p.QueueDirectories.length} queue folders.`;
+  if (p.SocketListeners) return 'It listens on a socket to decide when to run.';
+  return '';
 }
 
 function drawerInfoBlocks(t) {
@@ -679,41 +764,150 @@ function showModal({ title, desc, danger = false, confirmLabel = 'Confirm', onCo
   });
 }
 
-// ---------- Create new task ----------
+// ---------- Create new task (interactive + AI) ----------
 function openCreateModal() {
-  const t = state.tasks[0] || null;
-  showModal({
-    title: 'Create a New Scheduled Task',
-    desc: 'Choose where to store the new launchd agent and give it a name. You can configure it after creation.',
-    confirmLabel: 'Create',
-    fields: [
-      {
-        id: 'src', label: 'Source',
-        type: 'select',
-        options: ['User Launch Agents', 'System Launch Agents', 'System Launch Daemons'],
-        value: 'User Launch Agents',
-      },
-      { id: 'label', label: 'Label', placeholder: 'com.example.mytask', value: 'com.local.' + new Date().getTime().toString(36) },
-      { id: 'name', label: 'Filename', placeholder: 'com.example.mytask.plist', value: '' },
-    ],
-    onConfirm: async (vals) => {
-      const srcMap = {
-        'User Launch Agents': 'user-agents',
-        'System Launch Agents': 'system-agents',
-        'System Launch Daemons': 'system-daemons',
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal create-modal">
+      <div class="create-head">
+        <div>
+          <h3>Create a Scheduled Task</h3>
+          <p class="modal-desc" style="margin-top:4px">Describe a task or fill the form — we'll build the launchd plist.</p>
+        </div>
+        <button class="btn btn-ghost icon-btn" id="createClose">✕</button>
+      </div>
+
+      <div class="create-methods">
+        <button class="create-method active" data-method="ai">✨ AI — describe in words</button>
+        <button class="create-method" data-method="form">✎ Manual form</button>
+      </div>
+
+      <!-- AI mode -->
+      <div class="create-pane active" data-pane="ai">
+        <div class="field">
+          <label>What should I schedule?</label>
+          <textarea id="aiPrompt" rows="3" spellcheck="false" placeholder="e.g. Back up my Documents folder to a zip in my Backups folder every day at 3am"></textarea>
+          <div class="hint">Plain English. I'll figure out the program, schedule, and keep-alive settings automatically.</div>
+        </div>
+        <button class="btn btn-primary btn-block" id="aiGenBtn">✨ Generate task</button>
+        <div id="aiResult"></div>
+      </div>
+
+      <!-- Form mode -->
+      <div class="create-pane" data-pane="form">
+        <div class="field-row">
+          <div class="field"><label>Task name (label)</label><input id="cLabel" value="com.local.${new Date().getTime().toString(36)}" placeholder="com.example.mytask" /></div>
+          <div class="field"><label>Where to store it</label><select id="cSrc"></select></div>
+        </div>
+        <div class="field"><label>Command to run</label><input id="cProg" placeholder="/usr/bin/say" />
+          <div class="hint">Full path to a binary or script (e.g. /usr/bin/say, /bin/bash -lc, /opt/homebrew/bin/node)</div></div>
+        <div class="field"><label>Arguments (space separated, after the program)</label><input id="cArgs" placeholder="Hello from Mac Scheduler" /></div>
+        <div class="field-row-3">
+          <div class="field"><label>Hour</label><input id="cHourF" type="number" min="0" max="23" placeholder="9" value="9" /></div>
+          <div class="field"><label>Minute</label><input id="cMinF" type="number" min="0" max="59" placeholder="0" value="0" /></div>
+          <div class="field"><label>Weekday (blank=any)</label><select id="cWdF"><option value="">Any</option><option value="1">Mon</option><option value="2">Tue</option><option value="3">Wed</option><option value="4">Thu</option><option value="5">Fri</option><option value="6">Sat</option><option value="0">Sun</option></select></div>
+        </div>
+        <div class="toggle-row"><div><label>Run at load</label><div class="desc">Start immediately when loaded</div></div>
+          <label class="switch"><input type="checkbox" id="cRunAtLoad"><span class="slider"></span></label></div>
+        <div class="toggle-row"><div><label>Keep alive</label><div class="desc">Restart if it exits</div></div>
+          <label class="switch"><input type="checkbox" id="cKeepAlive"><span class="slider"></span></label></div>
+        <button class="btn btn-primary btn-block" id="cCreateBtn">Create task from form</button>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="createCancel">Cancel</button>
+      </div>
+    </div>`;
+  $('#modalRoot').appendChild(modal);
+  const close = () => modal.remove();
+  $('#createClose').addEventListener('click', close);
+  $('#createCancel').addEventListener('click', close);
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+
+  // Populate source select
+  const srcSelect = modal.querySelector('#cSrc');
+  (state.sources || []).forEach((s) => {
+    if (s.kind === 'cron') return;
+    srcSelect.insertAdjacentHTML('beforeend', `<option value="${esc(s.id)}">${esc(s.name)}</option>`);
+  });
+
+  // Method toggle
+  $$('.create-method', modal).forEach((m) => {
+    m.addEventListener('click', () => {
+      $$('.create-method', modal).forEach((x) => x.classList.toggle('active', x === m));
+      $$('.create-pane', modal).forEach((p) => p.classList.toggle('active', p.dataset.pane === m.dataset.method));
+    });
+  });
+
+  // AI generation
+  modal.querySelector('#aiGenBtn').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const prompt = modal.querySelector('#aiPrompt').value.trim();
+    if (!prompt) return toast('Describe the task first', 'error');
+    btn.disabled = true; btn.textContent = '✨ Thinking…';
+    const prev = modal.querySelector('#aiResult');
+    prev.innerHTML = '<div class="skeleton" style="height:120px"></div>';
+    try {
+      const r = await api('/ai/generate', { method: 'POST', body: JSON.stringify({ prompt }) });
+      prev.innerHTML = `
+        <div class="ai-preview">
+          <div class="info-item full"><label>Description</label><div class="val" style="font-weight:400">${esc(r.description || '')}</div></div>
+          <div class="info-item full"><label>Label</label><div class="val mono">${esc(r.label)}</div></div>
+          <div class="field"><label>Where to store it</label>
+            <select id="aiSrc" style="width:100%">${Array.from(srcSelect.options).map((o) => `<option value="${esc(o.value)}">${esc(o.text)}</option>`).join('')}</select>
+          </div>
+          <textarea id="aiPlist" spellcheck="false">${esc(r.xml)}</textarea>
+          <div class="drawer-actions-sticky">
+            <button class="btn btn-primary" id="aiCreateBtn">✨ Create this task</button>
+          </div>
+        </div>`;
+      const cb = async () => {
+        const xml = modal.querySelector('#aiPlist').value.trim();
+        const source = modal.querySelector('#aiSrc').value;
+        const name = (r.filename || r.label + '.plist');
+        try {
+          await api('/tasks', { method: 'POST', body: JSON.stringify({ source, name, xml }) });
+          toast('Task created from AI', 'success');
+          close();
+          await refresh();
+          setActiveSource(source);
+          openDrawer(source + '::' + name);
+        } catch (err) { toast('Create failed: ' + err.message, 'error', 6000); }
       };
-      const label = vals.label.trim();
-      const name = vals.name.trim() || (label.endsWith('.plist') ? label : label + '.plist');
-      const srcId = srcMap[vals.src] || 'user-agents';
-      const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${escXML(label)}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>/usr/bin/say</string>\n    <string>Hello from Mac Scheduler</string>\n  </array>\n  <key>StartCalendarInterval</key>\n  <dict>\n    <key>Hour</key>\n    <integer>9</integer>\n    <key>Minute</key>\n    <integer>0</integer>\n  </dict>\n</dict>\n</plist>\n`;
-      try {
-        await api('/tasks', { method: 'POST', body: JSON.stringify({ source: srcId, name, xml }) });
-        toast('Task created', 'success');
-        await refresh();
-        setActiveSource(srcId);
-        openDrawer(srcId + '::' + name);
-      } catch (e) { toast('Create failed: ' + e.message, 'error', 6000); }
-    },
+      prev.querySelector('#aiCreateBtn').addEventListener('click', cb);
+    } catch (err) {
+      prev.innerHTML = `<div class="info-item full" style="color:var(--red)">AI generation failed: ${esc(err.message)}</div>`;
+    }
+  });
+
+  // Form create
+  modal.querySelector('#cCreateBtn').addEventListener('click', async () => {
+    const label = modal.querySelector('#cLabel').value.trim();
+    const source = modal.querySelector('#cSrc').value;
+    const prog = modal.querySelector('#cProg').value.trim();
+    const args = modal.querySelector('#cArgs').value.trim();
+    if (!label || !prog) return toast('Name and program are required', 'error');
+    const name = label.endsWith('.plist') ? label : label + '.plist';
+    const allArgs = [prog, ...(args ? args.split(/\s+/) : [])].filter(Boolean);
+    const hour = modal.querySelector('#cHourF').value;
+    const min = modal.querySelector('#cMinF').value;
+    const wd = modal.querySelector('#cWdF').value;
+    let sched = '';
+    if (hour !== '' || min !== '') {
+      sched = `  <key>StartCalendarInterval</key>\n  <dict>\n${wd !== '' ? `    <key>Weekday</key>\n    <integer>${wd}</integer>\n` : ''}${hour !== '' ? `    <key>Hour</key>\n    <integer>${hour}</integer>\n` : ''}    <key>Minute</key>\n    <integer>${min !== '' ? min : 0}</integer>\n  </dict>\n`;
+    }
+    const runAtLoad = modal.querySelector('#cRunAtLoad').checked ? '  <key>RunAtLoad</key>\n  <true/>\n' : '';
+    const keepAlive = modal.querySelector('#cKeepAlive').checked ? '  <key>KeepAlive</key>\n  <true/>\n' : '';
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${escXML(label)}</string>\n  <key>ProgramArguments</key>\n  <array>\n${allArgs.map((a) => `    <string>${escXML(a)}</string>\n`).join('')}  </array>\n${sched}${runAtLoad}${keepAlive}</dict>\n</plist>\n`;
+    try {
+      await api('/tasks', { method: 'POST', body: JSON.stringify({ source, name, xml }) });
+      toast('Task created', 'success');
+      close();
+      await refresh();
+      setActiveSource(source);
+      openDrawer(source + '::' + name);
+    } catch (e) { toast('Create failed: ' + e.message, 'error', 6000); }
   });
 }
 
@@ -757,6 +951,52 @@ $$('#filterChips .chip').forEach((c) => {
   });
 });
 
+// View toggle (cards / list)
+$$('#viewSeg .seg-btn').forEach((b) => {
+  b.addEventListener('click', () => {
+    state.view = b.dataset.view;
+    localStorage.setItem('macsched-view', state.view);
+    render();
+  });
+});
+$('#sortSelect').addEventListener('change', (e) => {
+  state.sort = e.target.value;
+  localStorage.setItem('macsched-sort', state.sort);
+  render();
+});
+$('#sortSelect').value = state.sort;
+
+// Export / Import
+$('#exportBtn').addEventListener('click', async () => {
+  try {
+    const res = await fetch('/api/export');
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'mac-scheduler-tasks.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(a.href);
+    toast('Tasks exported', 'success');
+  } catch (e) { toast('Export failed: ' + e.message, 'error'); }
+});
+$('#importBtn').addEventListener('click', () => {
+  const fi = document.createElement('input');
+  fi.type = 'file'; fi.accept = '.json,application/json';
+  fi.onchange = async () => {
+    const file = fi.files && fi.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const res = await api('/import', { method: 'POST', body: JSON.stringify(data) });
+      const fails = (res.results || []).filter((r) => !r.ok);
+      toast(fails.length ? `Imported with ${fails.length} issue(s)` : 'Tasks imported', fails.length ? 'error' : 'success', 4000);
+      await refresh();
+    } catch (e) { toast('Import failed: ' + e.message, 'error', 6000); }
+  };
+  fi.click();
+});
+
 // ---------- Init ----------
 // ---------- Auto-refresh ----------
 let autoRefreshTimer = null;
@@ -781,9 +1021,13 @@ async function openSettings() {
   let ka = { enabled: false };
   let info = { version: '—', user: '—', host: '—' };
   let srcs = [];
+  let ai = { active_provider: null, providers: {}, applyopps: { running: false } };
+  let settings = {};
   try { ka = await api('/keepalive'); } catch {}
   try { info = await api('/'); } catch {}
   try { srcs = (await api('/sources')).sources; } catch {}
+  try { ai = await api('/ai'); } catch {}
+  try { settings = (await api('/settings')).settings || {}; } catch {}
 
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
@@ -794,7 +1038,7 @@ async function openSettings() {
           <div class="settings-icon">⚙</div>
           <div>
             <h3>Settings</h3>
-            <p class="modal-desc" style="margin:0">Mac Scheduler for ${esc(info.user)}@${esc(info.host)}</p>
+            <p class="modal-desc" style="margin:0">Mac Scheduler for ${esc(info.user)}@${esc(info.host)} · v${esc(info.version)}</p>
           </div>
         </div>
         <button class="btn btn-ghost icon-btn" id="settingsClose">✕</button>
@@ -802,7 +1046,8 @@ async function openSettings() {
 
       <div class="settings-tabs">
         <button class="settings-tab active" data-tab="general">General</button>
-        <button class="settings-tab" data-tab="access">Access</button>
+        <button class="settings-tab" data-tab="sources">Sources</button>
+        <button class="settings-tab" data-tab="ai">AI</button>
         <button class="settings-tab" data-tab="about">About</button>
       </div>
 
@@ -812,39 +1057,22 @@ async function openSettings() {
         <div class="settings-pane active" data-pane="general">
           <div class="section-title">Background</div>
           <div class="toggle-row">
-            <div>
-              <label>Run in background</label>
-              <div class="desc">Keeps the server alive when the window is closed, so tasks stay visible on next launch</div>
-            </div>
+            <div><label>Run in background</label><div class="desc">Keeps the server alive when the window is closed</div></div>
             <label class="switch"><input type="checkbox" id="kaToggle" ${ka.enabled ? 'checked' : ''}><span class="slider"></span></label>
           </div>
-
-          <div class="section-title" style="margin-top:18px">Appearance</div>
+          <div class="section-title" style="margin-top:16px">Appearance</div>
           <div class="toggle-row">
-            <div>
-              <label>Dark mode</label>
-              <div class="desc">Toggles the color theme</div>
-            </div>
+            <div><label>Dark mode</label><div class="desc">Color theme</div></div>
             <label class="switch"><input type="checkbox" id="themeToggle" ${state.theme === 'dark' ? 'checked' : ''}><span class="slider"></span></label>
           </div>
-
-          <div class="section-title" style="margin-top:18px">Behavior</div>
           <div class="toggle-row">
-            <div>
-              <label>Auto-refresh task list</label>
-              <div class="desc">Re-fetches tasks every 15 seconds so status changes appear automatically</div>
-            </div>
+            <div><label>Auto-refresh task list</label><div class="desc">Re-fetch every 15s</div></div>
             <label class="switch"><input type="checkbox" id="autoRefreshToggle" ${state.autoRefresh ? 'checked' : ''}><span class="slider"></span></label>
           </div>
         </div>
 
-        <!-- ACCESS -->
-        <div class="settings-pane" data-pane="access">
-          <div class="section-title">Why access is needed</div>
-          <div class="info-item full" style="margin-bottom:12px">
-            <div class="val" style="font-weight:400;font-size:12.5px;line-height:1.55">macOS protects scheduled-task files. Your own <b>~/Library/LaunchAgents</b> and crontab are always readable. System folders need <b>Full Disk Access</b> (and editing them needs administrator privileges).</div>
-          </div>
-
+        <!-- SOURCES: edit existing + add new -->
+        <div class="settings-pane" data-pane="sources">
           <div class="section-title">Scheduled task sources</div>
           <div class="src-status-list" id="srcStatusList">
             ${srcs.map((s) => `
@@ -852,24 +1080,50 @@ async function openSettings() {
                 <span class="mini-dot" style="background:${s.needsSudo ? 'var(--amber)' : 'var(--green)'}"></span>
                 <span class="src-status-name">${esc(s.name)}</span>
                 <span class="src-status-flag">${s.needsSudo ? 'sudo' : 'user'}</span>
-                <span class="src-status-desc">${esc(s.desc)}</span>
+                <button class="btn btn-sm src-edit" data-edit="${esc(s.id)}" title="Edit">✎</button>
               </div>`).join('')}
           </div>
-
-          <button class="btn btn-block" id="permBtn">🔓 Open Full Disk Access settings</button>
+          <button class="btn btn-ghost btn-block" id="addSourceBtn" style="margin-top:4px">+ Add a folder source</button>
+          <button class="btn btn-block" id="permBtn" style="margin-top:8px">🔓 Open Full Disk Access settings</button>
           <div class="hint" style="margin-top:6px">System Settings → Privacy & Security → Files and Folders → enable <b>Mac Scheduler</b>, then quit and reopen the app.</div>
+        </div>
+
+        <!-- AI: ApplyOpps providers -->
+        <div class="settings-pane" data-pane="ai">
+          <div class="toggle-row" style="background:var(--bg-soft)">
+            <div>
+              <label>AI router</label>
+              <div class="desc">ApplyOpps local server · 127.0.0.1:${ai.applyopps && ai.applyopps.running ? 'online' : 'offline — start ApplyOpps'}</div>
+            </div>
+            <span class="src-status-flag" style="background:${ai.applyopps && ai.applyopps.running ? 'var(--green-bg)' : 'var(--red-bg)'};color:${ai.applyopps && ai.applyopps.running ? 'var(--green)' : 'var(--red)'}">${ai.applyopps && ai.applyopps.running ? 'online' : 'offline'}</span>
+          </div>
+          <div class="section-title" style="margin-top:12px">Active provider</div>
+          <select id="aiProvider" class="sort-select" style="width:100%">
+            ${Object.keys(ai.providers || {}).map((k) => `<option value="${esc(k)}" ${ai.active_provider === k ? 'selected' : ''}>${esc(k)}</option>`).join('')}
+          </select>
+          <div class="section-title" style="margin-top:12px">Model</div>
+          <select id="aiModel" class="sort-select" style="width:100%"></select>
+          <div class="ai-provider-note" id="aiNote"></div>
+          <div class="drawer-actions-sticky">
+            <button class="btn btn-primary" id="aiSaveBtn">Save AI settings</button>
+          </div>
+          <div class="hint" style="margin-top:6px">The active provider and model are stored in <b>~/.applyopps/config.json</b> so ApplyOpps and Mac Scheduler use the same AI. Calls go to your local router first, then directly to the provider.</div>
         </div>
 
         <!-- ABOUT -->
         <div class="settings-pane" data-pane="about">
           <div class="info-grid">
-            <div class="info-item"><label>Version</label><div class="val">v${esc(info.version)}</div></div>
+            <div class="info-item"><label>App version</label><div class="val">v${esc(info.version)}</div></div>
             <div class="info-item"><label>Server</label><div class="val mono">127.0.0.1:8742</div></div>
             <div class="info-item"><label>User</label><div class="val mono">${esc(info.user)}</div></div>
             <div class="info-item"><label>Host</label><div class="val mono">${esc(info.host)}</div></div>
-            <div class="info-item full"><label>Data sources</label><div class="val">${srcs.length} launchd + cron locations</div></div>
+            <div class="info-item full"><label>Data locations</label><div class="val">${srcs.length} launchd + cron sources</div></div>
+            <div class="info-item full"><label>Config folder</label><div class="val mono">~/.config/macscheduler</div></div>
           </div>
-          <div class="hint" style="margin-top:12px">Mac Scheduler runs entirely on this computer — nothing leaves it.</div>
+          <div class="hint" style="margin-top:12px">Runs entirely on Mac Scheduler — nothing leaves your computer except an optional AI prompt you send while creating tasks.</div>
+          <div class="drawer-actions-sticky" style="margin-top:18px">
+            <button class="btn btn-danger" id="uninstallBtn">Uninstall Mac Scheduler</button>
+          </div>
         </div>
 
       </div>
@@ -915,6 +1169,96 @@ async function openSettings() {
   $('#permBtn').addEventListener('click', async () => {
     try { await api('/permissions', { method: 'POST' }); toast('Opening System Settings…', 'info'); }
     catch (err) { toast(err.message, 'error', 6000); }
+  });
+
+  // --- Sources: edit / add ---
+  $$('.src-edit', modal).forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const src = srcs.find((s) => s.id === btn.dataset.edit);
+      openSourceEditor(src);
+    });
+  });
+  function openSourceEditor(src) {
+    const isCustom = /^custom-/.test(src.id);
+    showModal({
+      title: isCustom ? 'Edit source' : `Source: ${src.name}`,
+      desc: isCustom ? 'Modify this custom task folder.' : 'Built-in sources are read-only here. To change these, edit the actual system paths in macOS.',
+      confirmLabel: isCustom ? 'Save' : 'OK',
+      fields: [
+        { id: 'name', label: 'Name', value: src.name, placeholder: src.name },
+        { id: 'dir', label: 'Folder path', value: src.dir || '', placeholder: '/path/to/folder' },
+        { id: 'desc', label: 'Description', value: src.desc || '', placeholder: 'What lives here' },
+      ],
+      onConfirm: async (vals) => {
+        try {
+          await api('/sources', { method: 'PUT', body: JSON.stringify({ id: src.id, name: vals.name, dir: vals.dir, desc: vals.desc }) });
+          toast('Source updated', 'success');
+          modal.remove();
+          openSettings();
+        } catch (e) { toast(e.message, 'error', 6000); }
+      },
+    });
+  }
+  $('#addSourceBtn').addEventListener('click', () => {
+    showModal({
+      title: 'Add a custom source',
+      desc: 'Point to a folder of scheduled tasks. Picker files (e.g. LaunchAgents) will be shown in the app and editable.',
+      confirmLabel: 'Add source',
+      fields: [
+        { id: 'name', label: 'Name', placeholder: 'My daemons' },
+        { id: 'dir', label: 'Folder path', placeholder: '/Users/you/Documents/tasks' },
+        { id: 'desc', label: 'Description (optional)', placeholder: '…' },
+      ],
+      onConfirm: async (vals) => {
+        try {
+          await api('/sources', { method: 'POST', body: JSON.stringify({ name: vals.name, dir: vals.dir, desc: vals.desc, kind: 'launchd' }) });
+          toast('Source added', 'success');
+          modal.remove();
+          openSettings();
+          await refresh();
+        } catch (e) { toast(e.message, 'error', 6000); }
+      },
+    });
+  });
+
+  // --- AI: populate model dropdown + note ---
+  const provs = ai.providers || {};
+  const populateModel = () => {
+    const p = provs[document.getElementById('aiProvider').value];
+    const sel = document.getElementById('aiModel');
+    const note = document.getElementById('aiNote');
+    sel.innerHTML = (p && p.models || []).map((m) => `<option value="${esc(m)}" ${p.default_model === m ? 'selected' : ''}>${esc(m)}</option>`).join('');
+    note.innerHTML = (p && p.notes ? `<div class="hint" style="margin-top:6px">${esc(p.notes)}</div>` : '')
+      + (p && p.api_key_masked ? `<div class="hint" style="margin-top:2px">key: <code>${esc(p.api_key_masked)}</code></div>` : '')
+      + (p && !p.has_key ? `<div class="hint" style="margin-top:2px;color:var(--red)">No API key set for this provider.</div>` : '');
+  };
+  document.getElementById('aiProvider').addEventListener('change', populateModel);
+  populateModel();
+
+  $('#aiSaveBtn').addEventListener('click', async () => {
+    const prov = document.getElementById('aiProvider').value;
+    const model = document.getElementById('aiModel').value;
+    try {
+      await api('/ai', { method: 'POST', body: JSON.stringify({ update: { active_provider: prov, providers: { [prov]: { default_model: model } } } }) });
+      toast('AI settings saved', 'success');
+    } catch (e) { toast(e.message, 'error', 6000); }
+  });
+
+  // --- Uninstall ---
+  $('#uninstallBtn').addEventListener('click', () => {
+    showModal({
+      title: 'Uninstall Mac Scheduler?',
+      desc: 'This removes the app and the files/folders Mac Scheduler created (~/.config/macscheduler, the keep-alive agent, logs). Your scheduled tasks are left untouched.',
+      danger: true, confirmLabel: 'Uninstall',
+      onConfirm: async () => {
+        try {
+          const currentPath = location.origin ? location.origin : '';
+          await api('/uninstall', { method: 'POST', body: JSON.stringify({ full: true, appPath: '/Applications/Mac Scheduler.app' }) });
+          toast('Mac Scheduler uninstalled. Tasks preserved.', 'success', 5000);
+          setTimeout(() => window.location.href = 'about:blank', 1200);
+        } catch (e) { toast('Uninstall failed: ' + e.message, 'error', 6000); }
+      },
+    });
   });
 }
 

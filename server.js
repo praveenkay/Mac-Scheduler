@@ -25,9 +25,23 @@ const HOST = '127.0.0.1';
 const ROOT = __dirname;
 
 // ---------------------------------------------------------------------------
+// App data dirs (created on first run / install)
+// ---------------------------------------------------------------------------
+const APP_CONFIG_DIR = path.join(os.homedir(), '.config', 'macscheduler');
+const APP_SOURCES_FILE = path.join(APP_CONFIG_DIR, 'sources.json');
+const APP_SETTINGS_FILE = path.join(APP_CONFIG_DIR, 'settings.json');
+const APPLYOPPS_CONFIG = path.join(os.homedir(), '.applyopps', 'config.json');
+const APPLYOPPS_PORT = 5290;
+const KEEPALIVE_LABEL = 'com.praveenkay.macscheduler.keepalive';
+
+function ensureAppDirs() {
+  try { fs.mkdirSync(APP_CONFIG_DIR, { recursive: true }); } catch {}
+}
+
+// ---------------------------------------------------------------------------
 // Source configuration
 // ---------------------------------------------------------------------------
-const SOURCES = [
+const BUILTIN_SOURCES = [
   {
     id: 'user-agents',
     name: 'User Launch Agents',
@@ -71,6 +85,35 @@ const SOURCES = [
   },
 ];
 
+// Custom sources are persisted to ~/.config/macscheduler/sources.json so users
+// can add their own scheduled-task locations.
+function loadCustomSources() {
+  ensureAppDirs();
+  try {
+    return JSON.parse(fs.readFileSync(APP_SOURCES_FILE, 'utf8')) || [];
+  } catch { return []; }
+}
+function saveCustomSources(list) {
+  ensureAppDirs();
+  fs.mkdirSync(path.dirname(APP_SOURCES_FILE), { recursive: true });
+  fs.writeFileSync(APP_SOURCES_FILE, JSON.stringify(list, null, 2), 'utf8');
+}
+function buildSOURCES() {
+  const custom = loadCustomSources().map((s) => ({
+    id: s.id,
+    name: s.name,
+    desc: s.desc || '',
+    dir: () => s.dir || s.path || '',
+    editable: true,
+    needsSudo: !!s.needsSudo,
+    kind: s.kind || 'launchd',
+    custom: true,
+  }));
+  return [...BUILTIN_SOURCES, ...custom];
+}
+let SOURCES = buildSOURCES();
+function refreshSources() { SOURCES = buildSOURCES(); }
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -79,6 +122,116 @@ function run(cmd, args, opts = {}) {
     execFile(cmd, args, { encoding: 'utf8', timeout: 20000, ...opts }, (err, out) => {
       resolve({ ok: !err, out: out || '', err: err ? String(err.message) : '' });
     });
+  });
+}
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+// Minimal HTTP JSON client (works for both http and https URLs).
+function postJSON(url, payload, { apiKey, model, timeout = 60000, system, user } = {}) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(url); } catch { return reject(new Error('Bad URL: ' + url)); }
+    const isHttps = u.protocol === 'https:';
+    const mod = isHttps ? require('https') : require('http');
+    const messages = [];
+    if (system) messages.push({ role: 'system', content: system });
+    messages.push({ role: 'user', content: user });
+    const data = JSON.stringify({ model: model || 'auto', messages, max_tokens: 2000 });
+    const reqOpts = {
+      hostname: u.hostname,
+      port: u.port || (isHttps ? 443 : 80),
+      path: u.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(data),
+      },
+    };
+    if (apiKey) reqOpts.headers.Authorization = 'Bearer ' + apiKey;
+    const req = mod.request(reqOpts, (res) => {
+      let body = '';
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(body);
+          const text = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+          if (text) return resolve({ text: String(text).trim() });
+          reject(new Error('AI empty response from ' + url + ' — ' + (j && j.error ? JSON.stringify(j.error) : body.slice(0, 200))));
+        } catch { reject(new Error('Invalid AI response from ' + url + ': ' + body.slice(0, 200))); }
+      });
+    });
+    req.setTimeout(timeout, () => req.destroy(new Error('AI request timed out')));
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+// Load ApplyOpps config (our source of truth for AI providers). Returns null if absent.
+function loadApplyOppsConfig() {
+  try { return JSON.parse(fs.readFileSync(APPLYOPPS_CONFIG, 'utf8')); }
+  catch { return null; }
+}
+function sanitizeProviders(cfg) {
+  if (!cfg) return { active_provider: null, providers: {} };
+  const out = {};
+  for (const [k, v] of Object.entries(cfg.providers || {})) {
+    out[k] = {
+      enabled: !!v.enabled,
+      free: !!v.free,
+      base_url: v.base_url || '',
+      models: v.models || [],
+      default_model: v.default_model || '',
+      notes: v.notes || '',
+      has_key: !!(v.api_key || k === 'ollama' || k === 'zen'),
+      api_key_masked: v.api_key ? String(v.api_key).slice(0, 6) + '…' + String(v.api_key).slice(-4) : '',
+    };
+  }
+  return { active_provider: cfg.active_provider, providers: out };
+}
+
+// Find the active provider config (only used server-side; keys never leave).
+function activeProvider(cfg) {
+  if (!cfg) return null;
+  const name = cfg.active_provider || Object.keys(cfg.providers || {}).find((k) => cfg.providers[k].enabled);
+  const p = cfg.providers && cfg.providers[name];
+  return p && p.enabled ? { name, ...p } : null;
+}
+
+// Send a prompt: prefer the ApplyOpps local router so users get the same
+// provider/model they configured there; else route by that same config directly.
+async function aiChat(user, system) {
+  const cfg = loadApplyOppsConfig();
+  // 1) Try the ApplyOpps router on its port (it already handles failover).
+  if (await loadUp(APPLYOPPS_PORT, '/v1/health')) {
+    try {
+      return await postJSON('http://127.0.0.1:' + APPLYOPPS_PORT + '/v1/chat/completions', {}, { model: 'auto', user, system, timeout: 90000 });
+    } catch (e) { /* fall through to direct */ }
+  }
+  // 2) Direct call to the configured active provider, trying its models in order.
+  const p = activeProvider(cfg);
+  if (!p) throw new Error('No AI provider enabled. Configure one in Settings → AI.');
+  const base = (p.base_url || '').replace(/\/+$/, '');
+  const url = base + '/chat/completions';
+  const models = (p.models && p.models.length ? p.models : [p.default_model].filter(Boolean));
+  const ordered = [p.default_model, ...models].filter((m, i, a) => m && a.indexOf(m) === i);
+  let lastErr;
+  for (const m of ordered) {
+    try {
+      return await postJSON(url, {}, { apiKey: p.api_key, model: m, user, system, timeout: 90000 });
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('No usable model for provider ' + p.name);
+}
+
+function loadUp(port, path) {
+  return new Promise((resolve) => {
+    const mod = require('http');
+    const req = mod.get('http://127.0.0.1:' + port + (path || '/'), (res) => {
+      res.resume(); resolve(true); req.destroy();
+    });
+    req.setTimeout(1200, () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(false));
   });
 }
 
@@ -405,10 +558,196 @@ async function handleApi(route, method, req, res) {
     return sendJson(res, 200, { ok: true });
   }
 
+  // /api/settings — read/write app settings (stored in ~/.config/macscheduler/settings.json)
+  if (route === '/api/settings' && method === 'GET') {
+    ensureAppDirs();
+    let s = {};
+    try { s = JSON.parse(fs.readFileSync(APP_SETTINGS_FILE, 'utf8')) || {}; } catch {}
+    return sendJson(res, 200, { ok: true, settings: s });
+  }
+  if (route === '/api/settings' && method === 'POST') {
+    const b = await body(req);
+    ensureAppDirs();
+    const cur = (() => { try { return JSON.parse(fs.readFileSync(APP_SETTINGS_FILE, 'utf8')) || {}; } catch { return {}; } })();
+    Object.assign(cur, b.settings || {});
+    fs.writeFileSync(APP_SETTINGS_FILE, JSON.stringify(cur, null, 2), 'utf8');
+    return sendJson(res, 200, { ok: true, settings: cur });
+  }
+
+  // /api/ai — ApplyOpps-powered AI provider config (read + write)
+  if (route === '/api/ai' && method === 'GET') {
+    const cfg = loadApplyOppsConfig();
+    const applyOppsUp = await loadUp(APPLYOPPS_PORT, '/v1/health');
+    return sendJson(res, 200, {
+      ok: true,
+      applyopps: { path: APPLYOPPS_CONFIG, running: applyOppsUp },
+      ...sanitizeProviders(cfg),
+    });
+  }
+  if (route === '/api/ai' && method === 'POST') {
+    const b = await body(req);
+    const cfg = loadApplyOppsConfig();
+    if (!cfg) return jsonError(res, 404, 'ApplyOpps config not found at ' + APPLYOPPS_CONFIG);
+    const update = b.update || {};
+    if (update.active_provider && cfg.providers[update.active_provider]) {
+      cfg.active_provider = update.active_provider;
+    }
+    if (update.providers) {
+      for (const [k, patch] of Object.entries(update.providers)) {
+        if (!cfg.providers[k]) continue;
+        if (typeof patch.enabled === 'boolean') cfg.providers[k].enabled = patch.enabled;
+        if (typeof patch.default_model === 'string') cfg.providers[k].default_model = patch.default_model;
+        if (typeof patch.api_key === 'string' && patch.api_key !== '') cfg.providers[k].api_key = patch.api_key;
+      }
+    }
+    try {
+      fs.writeFileSync(APPLYOPPS_CONFIG, JSON.stringify(cfg, null, 2), 'utf8');
+      return sendJson(res, 200, { ok: true, ...sanitizeProviders(cfg) });
+    } catch (e) { return jsonError(res, 500, e.message); }
+  }
+
+  // /api/ai/generate — plain-English → launchd plist (uses ApplyOpps router or its config)
+  if (route === '/api/ai/generate' && method === 'POST') {
+    const b = await body(req);
+    const prompt = (b.prompt || '').trim();
+    if (!prompt) return jsonError(res, 400, 'Describe the task you want to schedule');
+    const system = `You are a macOS scheduling expert. Convert the user's plain-English request into a single valid launchd plist.
+Return ONLY a JSON object with these keys:
+- "label": a reverse-dns label like "com.praveenkay.example"
+- "filename": the label + ".plist"
+- "description": one short sentence (plain text, no quotes needed) describing what the task does
+- "xml": the full plist XML (with <?xml ...?> declaration, <plist version="1.0">, <dict>...</dict>)
+
+Rules:
+- Always use ProgramArguments (never Program).
+- If a schedule/time is described use StartCalendarInterval or StartInterval.
+- If "always running"/"daemon"/"keep alive" is described set KeepAlive true.
+- Use /bin/bash or the exact path the user names for commands.
+- Keep it minimal and valid. No markdown fences.`;
+    try {
+      const { text } = await aiChat(prompt, system);
+      let obj = null;
+      try { obj = JSON.parse(text.replace(/```(json)?|```/g, '').trim()); } catch { obj = null; }
+      if (!obj || !obj.xml) return jsonError(res, 502, 'AI did not return a valid task. Try a more specific description.');
+      return sendJson(res, 200, { ok: true, label: obj.label, filename: obj.filename, description: obj.description, xml: obj.xml });
+    } catch (e) { return jsonError(res, 502, e.message); }
+  }
+
+  // /api/sources POST/PUT/DELETE — add/edit/remove custom sources
+  if (route === '/api/sources' && method === 'POST') {
+    const b = await body(req);
+    const name = (b.name || '').trim();
+    const dir = (b.dir || '').trim();
+    if (!name || !dir) return jsonError(res, 400, 'Name and folder path are required');
+    const list = loadCustomSources();
+    const id = (b.id || 'custom-' + Date.now().toString(36)).trim();
+    list.push({ id, name, dir, kind: b.kind === 'cron' ? 'cron' : 'launchd', needsSudo: !!b.needsSudo, desc: b.desc || '' });
+    saveCustomSources(list);
+    refreshSources();
+    return sendJson(res, 200, { ok: true, id });
+  }
+  if (route === '/api/sources' && method === 'PUT') {
+    const b = await body(req);
+    const list = loadCustomSources();
+    const item = list.find((s) => s.id === b.id);
+    if (!item) return jsonError(res, 404, 'Source not found');
+    if (b.name !== undefined) item.name = String(b.name).trim();
+    if (b.dir !== undefined) item.dir = String(b.dir).trim();
+    if (b.desc !== undefined) item.desc = String(b.desc).trim();
+    if (b.needsSudo !== undefined) item.needsSudo = !!b.needsSudo;
+    saveCustomSources(list);
+    refreshSources();
+    return sendJson(res, 200, { ok: true });
+  }
+  if (route === '/api/sources' && method === 'DELETE') {
+    const b = await body(req);
+    const list = loadCustomSources().filter((s) => s.id !== b.id);
+    saveCustomSources(list);
+    refreshSources();
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // /api/export — bundle all tasks (plists + crontabs) into one portable JSON file
+  if (route === '/api/export' && method === 'GET') {
+    const tasks = await collectTasks();
+    const bundle = {
+      app: 'Mac Scheduler',
+      version: '1.0.0',
+      exportedAt: new Date().toISOString(),
+      tasks: tasks.map((t) => ({
+        source: t.source,
+        name: t.name,
+        label: t.label,
+        type: t.type,
+        file: t.file,
+        raw: t.raw || '',
+      })),
+    };
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Content-Disposition': 'attachment; filename="mac-scheduler-tasks.json"',
+    });
+    return res.end(JSON.stringify(bundle, null, 2));
+  }
+
+  // /api/import — restore tasks from an export file (creates files, loads them)
+  if (route === '/api/import' && method === 'POST') {
+    const b = await body(req);
+    const tasks = Array.isArray(b.tasks) ? b.tasks : [];
+    if (!tasks.length) return jsonError(res, 400, 'No tasks in import file');
+    const results = [];
+    for (const t of tasks) {
+      const src = SOURCES.find((s) => s.id === t.source);
+      if (!src) { results.push({ name: t.name, ok: false, err: 'Unknown source ' + t.source }); continue; }
+      try {
+        if (t.type === 'cronfile') {
+          if (t.source === 'user-cron') {
+            const tmp = `/tmp/.macsched_cron_${process.getuid()}.txt`;
+            const existing = await readIfFile(tmp);
+            const content = t.raw || '';
+            fs.writeFileSync(tmp, content, 'utf8');
+            const x = await run('/usr/bin/crontab', [tmp]);
+            results.push({ name: t.name, ok: x.ok, err: x.ok ? '' : x.err });
+          } else {
+            results.push({ name: t.name, ok: false, err: 'System crontab import requires sudo (not automated)' });
+          }
+          continue;
+        }
+        const dir = src.dir();
+        fs.mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, t.name);
+        fs.writeFileSync(file, t.raw, 'utf8');
+        await run('/bin/launchctl', ['load', file]);
+        results.push({ name: t.name, ok: true });
+      } catch (e) { results.push({ name: t.name, ok: false, err: e.message }); }
+    }
+    return sendJson(res, 200, { ok: true, results });
+  }
+
+  // /api/uninstall — delete the app + created files/folders, but keep user tasks
+  if (route === '/api/uninstall' && method === 'POST') {
+    const b = await body(req);
+    const full = !!b.full;
+    // Never delete scheduled tasks themselves — only app artifacts.
+    const targets = [
+      APP_CONFIG_DIR,
+      path.join(os.homedir(), 'Library', 'LaunchAgents', KEEPALIVE_LABEL + '.plist'),
+      '/tmp/macsched.log',
+      '/tmp/macscheduler-keepalive.log',
+    ];
+    await run('/bin/launchctl', ['bootout', `gui/${process.getuid()}/${KEEPALIVE_LABEL}`]);
+    for (const t of targets) {
+      try { fs.rmSync(t, { recursive: true, force: true }); } catch {}
+    }
+    // Remove the .app bundle if a path is given (e.g. /Applications/Mac Scheduler.app).
+    if (full && b.appPath) {
+      try { fs.rmSync(b.appPath, { recursive: true, force: true }); } catch {}
+    }
+    return sendJson(res, 200, { ok: true, message: 'Mac Scheduler data removed. Your scheduled tasks were left untouched.' });
+  }
+
   return jsonError(res, 404, 'Unknown API route');
 }
-
-const KEEPALIVE_LABEL = 'com.praveenkay.macscheduler.keepalive';
 
 async function findNode() {
   const candidates = [

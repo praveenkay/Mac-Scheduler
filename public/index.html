@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mac Scheduler</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%8F%B0%3C/text%3E%3C/svg%3E" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app">
+  <!-- Sidebar -->
+  <aside id="sidebar">
+    <div class="brand">
+      <div class="brand-icon">⏰</div>
+      <div class="brand-text">
+        <h1>Mac Scheduler</h1>
+        <p id="brand-sub">Loading…</p>
+      </div>
+    </div>
+
+    <button id="newTaskBtn" class="btn btn-primary btn-block">
+      <svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0zm3.5 7h-2.5V4.5a1 1 0 0 0-2 0V7h-2.5a1 1 0 0 0 0 2h2.5v2.5a1 1 0 0 0 2 0V9h2.5a1 1 0 0 0 0-2z"/></svg>
+      New Scheduled Task
+    </button>
+
+    <nav id="sourceNav">
+      <div class="nav-section-label">Sources</div>
+      <button class="nav-item active" data-source="all">
+        <span class="nav-dot" style="background:linear-gradient(135deg,#6366f1,#a855f7)"></span>
+        <span class="nav-label">All Tasks</span>
+        <span class="nav-count" id="count-all">0</span>
+      </button>
+      <!-- populated from /api/sources -->
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="stat-row">
+        <span id="stat-total" class="stat-num">0</span><span class="stat-cap">tasks</span>
+      </div>
+      <div class="stat-row">
+        <span id="stat-loaded" class="stat-num">0</span><span class="stat-cap">running</span>
+      </div>
+      <div class="stat-row">
+        <span id="stat-sched" class="stat-num">0</span><span class="stat-cap">scheduled</span>
+      </div>
+      <div class="btn-row">
+        <button id="refreshBtn" class="btn btn-ghost" title="Refresh">↻ Refresh</button>
+        <button id="settingsBtn" class="btn btn-ghost" title="Settings & permissions">⚙</button>
+        <button id="themeBtn" class="btn btn-ghost" title="Toggle theme">◐</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main id="main">
+    <header id="topbar">
+      <div class="topbar-left">
+        <h2 id="viewTitle">All Tasks</h2>
+        <span class="view-desc" id="viewDesc">Every scheduled job on this Mac</span>
+      </div>
+      <div class="topbar-right">
+        <div class="search-wrap">
+          <svg class="search-ic" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/></svg>
+          <input id="searchInput" type="text" placeholder="Search tasks…" />
+          <button id="clearSearch" class="clear-search" hidden>×</button>
+        </div>
+        <div id="filterChips" class="chips">
+          <button class="chip active" data-filter="all">All</button>
+          <button class="chip" data-filter="running">Running</button>
+          <button class="chip" data-filter="scheduled">Scheduled</button>
+          <button class="chip" data-filter="stopped">Stopped</button>
+        </div>
+      </div>
+    </header>
+
+    <section id="content">
+      <div id="taskList" class="task-grid"></div>
+      <div id="emptyState" class="empty" hidden>
+        <div class="empty-ic">🔍</div>
+        <h3>No tasks found</h3>
+        <p>Try a different search or filter.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- Detail drawer -->
+  <aside id="drawer" hidden>
+    <div class="drawer-head">
+      <div class="drawer-title">
+        <span class="drawer-type-badge" id="dType">LAUNCHD</span>
+        <h3 id="dLabel">—</h3>
+        <span class="drawer-file" id="dFile">—</span>
+      </div>
+      <div class="drawer-actions">
+        <button id="drawerClose" class="btn btn-ghost icon-btn" title="Close">✕</button>
+      </div>
+    </div>
+
+    <div id="drawerBody" class="drawer-body">
+      <!-- populated by JS -->
+    </div>
+  </aside>
+</div>
+
+<div id="modalRoot"></div>
+<div id="toastRoot"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

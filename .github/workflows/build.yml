@@ -1,0 +1,71 @@
+name: build
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build-dmg:
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+          - arch: x86_64
+            runner: macos-13
+    runs-on: ${{ matrix.runner }}
+    env:
+      MAC_SCHEDULER_VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node (for parity)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build DMG (${{ matrix.arch }})
+        run: |
+          VER="${MAC_SCHEDULER_VERSION#v}"
+          chmod +x build-native.sh make-dmg.sh
+          ./make-dmg.sh "$VER" "${{ matrix.arch }}"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ matrix.arch }}
+          path: dist/*.dmg
+
+  release:
+    needs: build-dmg
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Extract version
+        id: version
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Mac Scheduler ${{ steps.version.outputs.tag }}
+          body: |
+            ## Mac Scheduler — control every scheduled task on your Mac
+
+            - Native AppKit app (WebKit window) for arm64 & x86_64
+            - Full CRUD on launchd agents/daemons + cron tables
+            - Keep-in-background agent and Full Disk Access integration
+            - Drag the `.app` into Applications to install
+          files: artifacts/**/*.dmg
+          draft: false
+          prerelease: false

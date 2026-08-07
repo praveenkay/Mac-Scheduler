@@ -1,0 +1,20 @@
+# Build artifacts
+dist/*.dmg
+dist/.*.dmg
+/tmp/
+
+# Native build staging
+/tmp_packages/
+*.tmp.dmg
+
+# macOS
+.DS_Store
+*.icns
+*.iconset
+
+# Logs
+*.log
+/tmp/macsched*.log
+
+# Keep the release DMGs accessible via repo for testing but ignore transient staging
+# dist/ is uploaded via GitHub Actions releases instead of committed.

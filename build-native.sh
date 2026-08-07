@@ -18,12 +18,20 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Library/
 
 # 1. Compile the native shell binary
 echo "==> Compiling native shell (Cocoa + WebKit)"
-swiftc -O "$NATIVE/main.swift" \
-  -framework Cocoa -framework WebKit \
-  -o "$APP/Contents/MacOS/MacScheduler" 2>&1 | grep -v "^$" | head -20
-if [ ! -x "$APP/Contents/MacOS/MacScheduler" ]; then
-  echo "!! Compile failed"; exit 1
+FLAG=()
+if [ "$ARCH" = "x86_64" ] && [ "$(uname -m)" = "arm64" ]; then
+  FLAG=("-target" "x86_64-apple-macosx12.0")
 fi
+if [ "$ARCH" = "arm64" ] && [ "$(uname -m)" = "x86_64" ]; then
+  FLAG=("-target" "arm64-apple-macosx12.0")
+fi
+swiftc -O "${FLAG[@]}" "$NATIVE/main.swift" \
+  -framework Cocoa -framework WebKit \
+  -o "$APP/Contents/MacOS/MacScheduler" 2>&1 >&2
+if [ ! -x "$APP/Contents/MacOS/MacScheduler" ]; then
+  echo "!! Compile failed (${FLAG[*]:-host})"; exit 1
+fi
+echo "==> Binary arch: $(file -b "$APP/Contents/MacOS/MacScheduler" | sed 's/.*Mach-O 64-bit executable //')"
 
 # 2. Info.plist
 echo "==> Writing Info.plist"

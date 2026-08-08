@@ -11,6 +11,7 @@ const state = {
   search: '',
   theme: localStorage.getItem('macsched-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
   autoRefresh: localStorage.getItem('macsched-autorefresh') === '1',
+  autoUpdate: localStorage.getItem('macsched-autoupdate') !== '0',
   view: localStorage.getItem('macsched-view') || 'grid',
   sort: localStorage.getItem('macsched-sort') || 'status',
   currentId: null,
@@ -32,6 +33,53 @@ async function api(path, opts = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
+}
+
+// ---------- Update check ----------
+let updateBannerEl = null;
+let updateChecked = false;
+
+async function checkForUpdates(manual = false) {
+  if (updateChecked && !manual) return;
+  try {
+    const u = await api('/update');
+    if (!u.ok) throw new Error(u.error || 'Update check failed');
+    updateChecked = true;
+    if (u.hasUpdate) {
+      showUpdateBanner(u);
+      if (manual) toast(`Version v${u.latest} is available`, 'success');
+    } else if (manual) {
+      toast(`You're up to date (v${u.current})`, 'success');
+    }
+    return u;
+  } catch (e) {
+    if (manual) toast(e.message, 'error', 6000);
+    return null;
+  }
+}
+
+function showUpdateBanner(u) {
+  if (updateBannerEl) return;
+  updateBannerEl = document.createElement('div');
+  updateBannerEl.className = 'update-banner';
+  updateBannerEl.innerHTML = `
+    <div class="update-banner-ic">⬇️</div>
+    <div class="update-banner-body">
+      <div class="update-banner-title">Mac Scheduler v${esc(u.latest)} is available</div>
+      <div class="update-banner-sub">You're running v${esc(u.current)}. <a href="${esc(u.releaseUrl)}" target="_blank" rel="noopener">View release</a></div>
+    </div>
+    <button class="btn btn-primary btn-sm" id="updateGoBtn">Update</button>
+    <button class="btn btn-ghost icon-btn" id="updateDismissBtn" title="Dismiss">✕</button>`;
+  document.body.appendChild(updateBannerEl);
+  $('#updateGoBtn').addEventListener('click', async () => {
+    try { await api('/open', { method: 'POST', body: JSON.stringify({ url: u.releaseUrl }) }); }
+    catch (e) { toast(e.message, 'error', 6000); }
+  });
+  $('#updateDismissBtn').addEventListener('click', () => dismissUpdateBanner());
+}
+
+function dismissUpdateBanner() {
+  if (updateBannerEl) { updateBannerEl.remove(); updateBannerEl = null; }
 }
 
 // ---------- Toasts ----------
@@ -1014,6 +1062,7 @@ function setupAutoRefresh() {
   $('#brand-sub').textContent = navigator.platform || 'macOS';
   await refresh();
   setupAutoRefresh();
+  if (state.autoUpdate) checkForUpdates(false);
 })();
 
 // ---------- Settings (tabbed panel) ----------
@@ -1069,6 +1118,10 @@ async function openSettings() {
             <div><label>Auto-refresh task list</label><div class="desc">Re-fetch every 15s</div></div>
             <label class="switch"><input type="checkbox" id="autoRefreshToggle" ${state.autoRefresh ? 'checked' : ''}><span class="slider"></span></label>
           </div>
+          <div class="toggle-row">
+            <div><label>Auto check for updates</label><div class="desc">Check GitHub for a new version on launch</div></div>
+            <label class="switch"><input type="checkbox" id="autoUpdateToggle" ${state.autoUpdate ? 'checked' : ''}><span class="slider"></span></label>
+          </div>
         </div>
 
         <!-- SOURCES: edit existing + add new -->
@@ -1122,6 +1175,7 @@ async function openSettings() {
           </div>
           <div class="hint" style="margin-top:12px">Runs entirely on Mac Scheduler — nothing leaves your computer except an optional AI prompt you send while creating tasks.</div>
           <div class="drawer-actions-sticky" style="margin-top:18px">
+            <button class="btn btn-ghost" id="checkUpdateBtn" style="margin-right:8px">🔍 Check for updates</button>
             <button class="btn btn-danger" id="uninstallBtn">Uninstall Mac Scheduler</button>
           </div>
         </div>
@@ -1164,6 +1218,13 @@ async function openSettings() {
     localStorage.setItem('macsched-autorefresh', state.autoRefresh ? '1' : '0');
     setupAutoRefresh();
     toast(state.autoRefresh ? 'Auto-refresh on' : 'Auto-refresh off', 'success');
+  });
+
+  $('#autoUpdateToggle').addEventListener('change', (e) => {
+    state.autoUpdate = e.target.checked;
+    localStorage.setItem('macsched-autoupdate', state.autoUpdate ? '1' : '0');
+    if (state.autoUpdate) checkForUpdates(true);
+    toast(state.autoUpdate ? 'Auto update checks on' : 'Auto update checks off', 'success');
   });
 
   $('#permBtn').addEventListener('click', async () => {
@@ -1245,6 +1306,7 @@ async function openSettings() {
   });
 
   // --- Uninstall ---
+  $('#checkUpdateBtn').addEventListener('click', () => checkForUpdates(true));
   $('#uninstallBtn').addEventListener('click', () => {
     showModal({
       title: 'Uninstall Mac Scheduler?',

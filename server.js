@@ -15,6 +15,7 @@
 'use strict';
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
@@ -23,6 +24,11 @@ const os = require('os');
 const PORT = Number(process.env.MAC_SCHEDULER_PORT || 8742);
 const HOST = '127.0.0.1';
 const ROOT = __dirname;
+
+const APP_VERSION = '0.4.0';
+const GITHUB_REPO = 'praveenkay/Mac-Scheduler';
+const GITHUB_RELEASES_URL = 'https://github.com/' + GITHUB_REPO + '/releases';
+const GITHUB_LATEST_API = 'https://api.github.com/repos/' + GITHUB_REPO + '/releases/latest';
 
 // ---------------------------------------------------------------------------
 // App data dirs (created on first run / install)
@@ -429,6 +435,37 @@ function sendJson(res, code, data) {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(data));
 }
+
+function semverGt(a, b) {
+  const pa = String(a).split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = pa[i] || 0;
+    const nb = pb[i] || 0;
+    if (na !== nb) return na > nb;
+  }
+  return false;
+}
+
+function getJSON(url, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https:') ? https : http;
+    const req = mod.get(url, { headers: { 'Accept': 'application/vnd.github+json', ...headers } }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => {
+        if (res.statusCode >= 400) {
+          reject(new Error('HTTP ' + res.statusCode));
+          return;
+        }
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(new Error('Bad response from ' + url)); }
+      });
+    });
+    req.on('error', (e) => reject(e));
+    req.setTimeout(8000, () => { req.destroy(new Error('Request timed out')); });
+  });
+}
 function jsonError(res, code, msg) {
   sendJson(res, code, { ok: false, error: String(msg) });
 }
@@ -445,9 +482,10 @@ function body(req) {
 async function handleApi(route, method, req, res) {
   if (route === '/api' && method === 'GET') {
     return sendJson(res, 200, {
-      ok: true, name: 'Mac Scheduler', version: '1.0.0',
+      ok: true, name: 'Mac Scheduler', version: APP_VERSION,
       user: os.userInfo().username, host: os.hostname(),
       sourceCount: SOURCES.length,
+      updateUrl: GITHUB_RELEASES_URL,
     });
   }
   if (route === '/api/sources' && method === 'GET') {
@@ -672,7 +710,7 @@ Rules:
     const tasks = await collectTasks();
     const bundle = {
       app: 'Mac Scheduler',
-      version: '1.0.0',
+      version: APP_VERSION,
       exportedAt: new Date().toISOString(),
       tasks: tasks.map((t) => ({
         source: t.source,
@@ -744,6 +782,40 @@ Rules:
       try { fs.rmSync(b.appPath, { recursive: true, force: true }); } catch {}
     }
     return sendJson(res, 200, { ok: true, message: 'Mac Scheduler data removed. Your scheduled tasks were left untouched.' });
+  }
+
+  // --- Update check: query the GitHub latest release and compare versions ---
+  if (route === '/api/update' && method === 'GET') {
+    try {
+      const release = await getJSON(GITHUB_LATEST_API, { 'User-Agent': 'Mac-Scheduler/' + APP_VERSION });
+      const latest = String(release.tag_name || '').replace(/^v/, '');
+      const current = APP_VERSION.replace(/^v/, '');
+      const hasUpdate = latest && semverGt(latest, current);
+      return sendJson(res, 200, {
+        ok: true,
+        current: APP_VERSION,
+        latest: latest || null,
+        hasUpdate: !!hasUpdate,
+        releaseUrl: release.html_url || GITHUB_RELEASES_URL,
+        releaseName: release.name || null,
+        publishedAt: release.published_at || null,
+        updateUrl: GITHUB_RELEASES_URL,
+      });
+    } catch (e) {
+      // No published release yet (404) or network failure → nothing newer known.
+      return sendJson(res, 200, { ok: true, current: APP_VERSION, latest: null, hasUpdate: false, releaseUrl: GITHUB_RELEASES_URL, updateUrl: GITHUB_RELEASES_URL, note: e.message });
+    }
+  }
+
+  // --- Open a URL in the default browser (used to jump to the release page) ---
+  if (route === '/api/open' && method === 'POST') {
+    const b = await body(req);
+    const url = String(b.url || '');
+    if (!/^https?:\/\//.test(url)) return jsonError(res, 400, 'Invalid URL');
+    try {
+      await run('/usr/bin/open', [url]);
+      return sendJson(res, 200, { ok: true });
+    } catch (e) { return jsonError(res, 500, e.message); }
   }
 
   return jsonError(res, 404, 'Unknown API route');

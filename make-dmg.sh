@@ -2,7 +2,7 @@
 # Builds drag-to-Applications DMG installers for all Mac architectures.
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-VERSION="${1:-1.0.0}"
+VERSION="${1:-0.4.0}"
 ARCHS=("${@:2}")
 [ ${#ARCHS[@]} -eq 0 ] && ARCHS=(arm64 x86_64)
 DMGDIR="$ROOT/dist"

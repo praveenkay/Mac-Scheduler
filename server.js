@@ -888,6 +888,11 @@ async function handleJob(id, method, req, res) {
       await bootout(task);
       return sendJson(res, 200, { ok: true });
     }
+    if (action === 'restart') {
+      await bootout(task);
+      const x = await run('/bin/launchctl', ['load', task.file]);
+      return x.ok ? sendJson(res, 200, { ok: true }) : jsonError(res, 500, x.err);
+    }
     if (action === 'run') {
       // ensure it is loaded first, then kickstart
       await run('/bin/launchctl', ['load', task.file]);

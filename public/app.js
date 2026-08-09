@@ -460,8 +460,9 @@ function renderLaunchdDrawer(body, t) {
     <div class="section">
       <div class="section-title">Operations</div>
       <div class="op-btns">
-        <button class="btn btn-success btn-sm" data-op="load">▶ Load</button>
-        <button class="btn btn-sm" data-op="unload">⏹ Unload</button>
+        <button class="btn btn-success btn-sm" data-op="load">▶ Start</button>
+        <button class="btn btn-danger btn-sm" data-op="unload">⏹ Stop</button>
+        <button class="btn btn-sm" data-op="restart">↻ Restart</button>
         <button class="btn btn-sm" data-op="run">⚡ Run Now</button>
       </div>
     </div>
@@ -536,7 +537,8 @@ function renderLaunchdDrawer(body, t) {
       b.disabled = true;
       try {
         await api('/job/' + encodeURIComponent(t.id), { method: 'POST', body: JSON.stringify({ action: op }) });
-        toast(op === 'load' ? 'Task loaded' : op === 'unload' ? 'Task unloaded' : 'Task launched now', 'success');
+        const msg = { load: 'Task started', unload: 'Task stopped', restart: 'Task restarted', run: 'Task launched now' }[op] || 'Done';
+        toast(msg, 'success');
         await refresh();
         await openDrawer(t.id);
       } catch (e) { toast(e.message, 'error', 6000); }

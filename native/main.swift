@@ -142,9 +142,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         window.delegate = self
         window.isReleasedWhenClosed = false
 
-        webView = WKWebView(frame: NSRect(x: 0, y: 0, width: rect.width, height: rect.height))
+        webView = WKWebView(frame: window.contentView!.bounds)
         webView.autoresizingMask = [.width, .height]
         webView.navigationDelegate = self
+        webView.setValue(false, forKey: "drawsBackground")
         window.contentView?.addSubview(webView)
         window.makeKeyAndOrderFront(nil)
     }

@@ -58,7 +58,7 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; }
+html, body { height: 100%; margin: 0; padding: 0; }
 body {
   font-family: var(--sans);
   background: var(--bg);
@@ -67,10 +67,6 @@ body {
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
-  /* Native WKWebView with a transparent titlebar can be a few px taller than
-     the visible area; a tiny bottom safety allows the last row to scroll
-     into view instead of being clipped. */
-  padding-bottom: 8px;
 }
 button { font-family: inherit; cursor: pointer; }
 input, select, textarea { font-family: inherit; }
@@ -82,11 +78,11 @@ input, select, textarea { font-family: inherit; }
 #app {
   display: grid;
   grid-template-columns: 264px minmax(0, 1fr);
-  height: 100vh;
+  height: 100%;
   overflow: hidden;
 }
 /* Minimal correct flex/grid: children must be allowed to shrink so their
-   internal scrollbars appear instead of clipping past 100vh. */
+   internal scrollbars appear instead of clipping past 100%. */
 #main,
 #sidebar,
 #content {
@@ -104,6 +100,7 @@ input, select, textarea { font-family: inherit; }
   gap: 14px;
   overflow: hidden;
   isolation: isolate;
+  height: 100%;
 }
 .brand { display: flex; align-items: center; gap: 12px; padding: 4px 6px; }
 .brand-icon {

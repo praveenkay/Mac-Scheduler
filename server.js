@@ -25,7 +25,7 @@ const PORT = Number(process.env.MAC_SCHEDULER_PORT || 8742);
 const HOST = '127.0.0.1';
 const ROOT = __dirname;
 
-const APP_VERSION = '0.4.1';
+const APP_VERSION = '0.4.2';
 const GITHUB_REPO = 'praveenkay/Mac-Scheduler';
 const GITHUB_RELEASES_URL = 'https://github.com/' + GITHUB_REPO + '/releases';
 const GITHUB_LATEST_API = 'https://api.github.com/repos/' + GITHUB_REPO + '/releases/latest';

@@ -4,7 +4,7 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 NATIVE="$ROOT/native"
-VERSION="${1:-0.4.0}"
+VERSION="${1:-0.4.2}"
 ARCH="${2:-$(uname -m)}"
 APP_NAME="Mac Scheduler.app"
 STAGE="/tmp/macscheduler_build_${ARCH}"
@@ -35,7 +35,7 @@ echo "==> Binary arch: $(file -b "$APP/Contents/MacOS/MacScheduler" | sed 's/.*M
 
 # 2. Info.plist
 echo "==> Writing Info.plist"
-sed -e "s|<string>0.4.0</string>|<string>$VERSION</string>|g" "$NATIVE/Info.plist" > "$APP/Contents/Info.plist"
+sed -e "s|<string>0.4.2</string>|<string>$VERSION</string>|g" "$NATIVE/Info.plist" > "$APP/Contents/Info.plist"
 
 # Use plutil to embed real version
 plutil -replace CFBundleVersion -string "$VERSION" "$APP/Contents/Info.plist"

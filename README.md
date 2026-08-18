@@ -2,7 +2,21 @@
 
 A native macOS app for managing **every scheduled task on your Mac** — launchd agents, launch daemons, and cron jobs — with full create, read, edit, delete, start, and stop controls in a single beautiful interface.
 
-![UI](docs/screenshot.png)
+## Demo
+
+![Mac Scheduler Demo](docs/demo.gif)
+
+---
+
+## Screenshots
+
+| Main View | Task Details | Settings |
+|-----------|-------------|----------|
+| ![Main Dark](docs/screenshots/01-main-dark.png) | ![Task Drawer](docs/screenshots/02-task-drawer-dark.png) | ![Settings](docs/screenshots/03-settings-dark.png) |
+
+| Light Mode | Task Details (Light) | Search |
+|------------|---------------------|--------|
+| ![Main Light](docs/screenshots/04-main-light.png) | ![Task Light](docs/screenshots/05-task-drawer-light.png) | ![Search](docs/screenshots/06-search.png) |
 
 ---
 
@@ -93,6 +107,80 @@ macOS protects scheduled-task files. On first launch:
 3. Quit and reopen the app
 
 Editing `/Library/LaunchAgents`, `/Library/LaunchDaemons`, or `/etc/crontab` requires an admin user — the OS will prompt for your password.
+
+---
+
+## Usage Workflow
+
+### 1. Browse Your Tasks
+
+Launch Mac Scheduler to see all scheduled tasks from 5 sources in one unified view. The sidebar shows live counts for each source.
+
+![Main View](docs/screenshots/01-main-dark.png)
+
+**Key features:**
+- **61 tasks** displayed as cards with status indicators (green = running, yellow = scheduled, red = stopped)
+- **Sidebar** lists all sources: User Launch Agents, System Launch Agents, System Launch Daemons, User Crontab, System Crontab
+- **Status bar** at the bottom shows totals: 61 Tasks, 13 Running, 23 Scheduled
+
+### 2. Filter and Search
+
+Use the search bar and filter chips to find specific tasks quickly.
+
+![Search](docs/screenshots/06-search.png)
+
+- **Search** — Type any keyword to filter by name or path
+- **Filter chips** — Click All, Running, Scheduled, or Stopped to filter by status
+- **Sort** — Use the dropdown to sort by Status, Name (A-Z), or Source
+
+### 3. View Task Details
+
+Click any task card to open the detail drawer with full controls.
+
+![Task Details](docs/screenshots/02-task-drawer-dark.png)
+
+**Task operations:**
+| Button | Action | Description |
+|--------|--------|-------------|
+| **▶ Start** | `bootout` + `load` | Enables and loads the task |
+| **⏹ Stop** | `bootout` | Stops and disables the task |
+| **↻ Restart** | `bootout` + `load` | Restarts the task |
+| **⚡ Run Now** | `load` + `kickstart` | Forces immediate execution |
+
+### 4. Edit Tasks
+
+In the detail drawer, you can modify every aspect of a launchd task:
+
+- **Label** — Unique identifier (e.g., `com.example.myagent`)
+- **Program** — Path to the binary or script
+- **Arguments** — Command-line arguments
+- **Working Directory** — Where the task runs from
+- **Schedule** — Calendar interval, interval, or cron expression
+- **Options** — Run at load, Keep alive
+- **Raw XML** — Toggle to edit the plist directly
+
+### 5. Create New Tasks
+
+Click **+ New Scheduled Task** in the sidebar to create a new launchd agent or cron job.
+
+**With AI:**
+1. Open the new task dialog
+2. Type a description: *"Back up my Documents folder every night at 2 AM"*
+3. Click **Generate** — the AI creates a working plist
+4. Review and save
+
+**Manual:**
+1. Choose a source (User Launch Agents recommended)
+2. Fill in the form with label, program, arguments, and schedule
+3. Click **Save**
+
+### 6. Toggle Theme
+
+Switch between dark and light mode using the theme button in the sidebar footer.
+
+| Dark Mode | Light Mode |
+|-----------|------------|
+| ![Dark](docs/screenshots/01-main-dark.png) | ![Light](docs/screenshots/04-main-light.png) |
 
 ---
 

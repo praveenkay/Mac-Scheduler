@@ -25,7 +25,7 @@ const PORT = Number(process.env.MAC_SCHEDULER_PORT || 8742);
 const HOST = '127.0.0.1';
 const ROOT = __dirname;
 
-const APP_VERSION = '0.4.2';
+const APP_VERSION = '0.4.3';
 const GITHUB_REPO = 'praveenkay/Mac-Scheduler';
 const GITHUB_RELEASES_URL = 'https://github.com/' + GITHUB_REPO + '/releases';
 const GITHUB_LATEST_API = 'https://api.github.com/repos/' + GITHUB_REPO + '/releases/latest';
@@ -88,6 +88,13 @@ const BUILTIN_SOURCES = [
     editable: true,
     needsSudo: true,
     kind: 'cron',
+  },
+  {
+    id: 'hermes-cron',
+    name: 'Hermes Cron Jobs',
+    desc: '~/.hermes/cron/jobs.json — Hermes Agent scheduled tasks',
+    editable: false,
+    kind: 'hermes',
   },
 ];
 
@@ -318,6 +325,11 @@ async function collectTasks() {
   const state = await launchctlState();
 
   for (const src of SOURCES) {
+    if (src.id === 'hermes-cron') {
+      const hermesTasks = await collectHermesCron();
+      tasks.push(...hermesTasks);
+      continue;
+    }
     if (src.kind === 'cron') {
       const cronTask = await collectCron(src, state);
       if (cronTask) tasks.push(cronTask);
@@ -360,11 +372,59 @@ async function collectTasks() {
 }
 
 // ---------------------------------------------------------------------------
-// Cron collection
+// Hermes cron collection (reads ~/.hermes/cron/jobs.json)
 // ---------------------------------------------------------------------------
+const HERMES_JOBS_PATH = path.join(os.homedir(), '.hermes', 'cron', 'jobs.json');
+
+async function collectHermesCron() {
+  const raw = await readIfFile(HERMES_JOBS_PATH);
+  if (!raw) return [];
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch { return []; }
+  const jobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
+  return jobs.map((j) => {
+    const enabled = j.enabled === true;
+    const stateStr = j.state || (enabled ? 'scheduled' : 'paused');
+    const nextRun = j.next_run_at ? new Date(j.next_run_at).toLocaleString() : '—';
+    const lastRun = j.last_run_at ? new Date(j.last_run_at).toLocaleString() : '—';
+    const lastStatus = j.last_status || '—';
+    const scheduleDisplay = j.schedule_display || (j.schedule && j.schedule.display) || '—';
+    const promptPreview = String(j.prompt || '').slice(0, 120);
+    return {
+      id: 'hermes-cron::' + j.id,
+      source: 'hermes-cron',
+      name: j.name || j.id,
+      label: j.name || j.id,
+      type: 'hermes',
+      loaded: enabled,
+      pid: null,
+      status: stateStr,
+      file: HERMES_JOBS_PATH,
+      editable: false,
+      needsSudo: false,
+      parsed: j,
+      raw: JSON.stringify(j, null, 2),
+      meta: {
+        schedule: scheduleDisplay,
+        nextRun,
+        lastRun,
+        lastStatus,
+        promptPreview,
+        deliver: j.deliver || 'origin',
+        repeat: j.repeat ? (j.repeat.completed || 0) : 0,
+      },
+    };
+  });
+}
 async function collectCron(src) {
-  const x = await run('/usr/bin/crontab', ['-l']);
-  const content = x.ok ? x.out : (src.id === 'system-cron' ? await readIfFile('/etc/crontab') || '' : '');
+  let content = '';
+  if (src.id === 'user-cron') {
+    const x = await run('/usr/bin/crontab', ['-l']);
+    content = x.ok ? x.out : '';
+  } else if (src.id === 'system-cron') {
+    content = await readIfFile('/etc/crontab') || '';
+  }
   const jobs = parseCrontab(content);
   return {
     id: src.id + '::__file__',
@@ -383,6 +443,10 @@ async function collectCron(src) {
     meta: null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Cron collection helpers
+// ---------------------------------------------------------------------------
 
 function parseCrontab(content) {
   const jobs = [];
@@ -833,6 +897,20 @@ async function findNode() {
   return '/opt/homebrew/bin/node';
 }
 
+async function findHermes() {
+  const candidates = [
+    path.join(os.homedir(), '.hermes', 'hermes-agent', 'venv', 'bin', 'hermes'),
+    path.join(os.homedir(), '.local', 'bin', 'hermes'),
+    '/opt/homebrew/bin/hermes',
+    '/usr/local/bin/hermes',
+    path.join(os.homedir(), 'bin', 'hermes'),
+  ];
+  for (const c of candidates) {
+    try { await fs.promises.access(c, fs.constants.X_OK); return c; } catch {}
+  }
+  return null;
+}
+
 async function handleJob(id, method, req, res) {
   const all = await collectTasks();
   const task = all.find((t) => t.id === id);
@@ -879,6 +957,26 @@ async function handleJob(id, method, req, res) {
   if (method === 'POST') {
     const b = await body(req);
     const action = b.action;
+    // Hermes jobs: read-only management via hermes CLI
+    if (task.type === 'hermes') {
+      const jobId = task.id.replace('hermes-cron::', '');
+      const hermesBin = await findHermes();
+      if (!hermesBin) return jsonError(res, 500, 'hermes CLI not found. Is Hermes installed?');
+      const env = { ...process.env, HERMES_HOME: os.homedir() + '/.hermes' };
+      if (action === 'run') {
+        const x = await run(hermesBin, ['cron', 'run', jobId], { env });
+        return x.ok ? sendJson(res, 200, { ok: true }) : jsonError(res, 500, x.err);
+      }
+      if (action === 'pause') {
+        const x = await run(hermesBin, ['cron', 'pause', jobId], { env });
+        return x.ok ? sendJson(res, 200, { ok: true }) : jsonError(res, 500, x.err);
+      }
+      if (action === 'resume') {
+        const x = await run(hermesBin, ['cron', 'resume', jobId], { env });
+        return x.ok ? sendJson(res, 200, { ok: true }) : jsonError(res, 500, x.err);
+      }
+      return jsonError(res, 400, 'Hermes jobs only support run/pause/resume');
+    }
     if (action === 'load') {
       await bootout(task);
       const x = await run('/bin/launchctl', ['load', task.file]);

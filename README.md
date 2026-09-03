@@ -47,6 +47,7 @@ A native macOS app for managing **every scheduled task on your Mac** — launchd
 | System Launch Daemons | `/Library/LaunchDaemons/` | At boot, as root |
 | User Crontab | `crontab -l` | Your cron scheduler |
 | System Crontab | `/etc/crontab` | System-wide cron |
+| Hermes Cron Jobs | `~/.hermes/cron/jobs.json` | Hermes Agent scheduler |
 
 The app reads macOS's real scheduling model — launchd plists with `StartCalendarInterval`, `StartInterval`, `RunAtLoad`, `KeepAlive` — and interacts with `launchctl` to load, unload, kickstart, and manage jobs.
 
@@ -120,7 +121,7 @@ Launch Mac Scheduler to see all scheduled tasks from 5 sources in one unified vi
 
 **Key features:**
 - **61 tasks** displayed as cards with status indicators (green = running, yellow = scheduled, red = stopped)
-- **Sidebar** lists all sources: User Launch Agents, System Launch Agents, System Launch Daemons, User Crontab, System Crontab
+- **Sidebar** lists all sources: User Launch Agents, System Launch Agents, System Launch Daemons, User Crontab, System Crontab, Hermes Cron Jobs
 - **Status bar** at the bottom shows totals: 61 Tasks, 13 Running, 23 Scheduled
 
 ### 2. Filter and Search

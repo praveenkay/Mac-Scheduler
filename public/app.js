@@ -125,7 +125,7 @@ function buildSourceNav() {
     const btn = document.createElement('button');
     btn.className = 'nav-item' + (state.activeSource === s.id ? ' active' : '');
     btn.dataset.source = s.id;
-    const colors = { 'user-agents': 'linear-gradient(135deg,#22c55e,#16a34a)', 'system-agents': 'linear-gradient(135deg,#3b82f6,#2563eb)', 'system-daemons': 'linear-gradient(135deg,#8b5cf6,#6d28d9)', 'user-cron': 'linear-gradient(135deg,#f59e0b,#d97706)', 'system-cron': 'linear-gradient(135deg,#ef4444,#b91c1c)' };
+    const colors = { 'user-agents': 'linear-gradient(135deg,#22c55e,#16a34a)', 'system-agents': 'linear-gradient(135deg,#3b82f6,#2563eb)', 'system-daemons': 'linear-gradient(135deg,#8b5cf6,#6d28d9)', 'user-cron': 'linear-gradient(135deg,#f59e0b,#d97706)', 'system-cron': 'linear-gradient(135deg,#ef4444,#b91c1c)', 'hermes-cron': 'linear-gradient(135deg,#0ea5e9,#0284c7)' };
     btn.innerHTML = `<span class="nav-dot" style="background:${colors[s.id] || 'var(--accent)'}"></span><span class="nav-label">${esc(s.name)}</span><span class="nav-count">${count}</span>`;
     btn.addEventListener('click', () => { setActiveSource(s.id); });
     nav.appendChild(btn);
@@ -141,6 +141,11 @@ function setActiveSource(id) {
 // ---------- Classification ----------
 function taskStatus(t) {
   if (t.type === 'cronfile') return t.jobs && t.jobs.length ? 'scheduled' : 'stopped';
+  if (t.type === 'hermes') {
+    if (t.status === 'running') return 'running';
+    if (t.loaded || t.status === 'scheduled') return 'scheduled';
+    return 'stopped';
+  }
   if (t.loaded) return 'running';
   if (isScheduled(t.parsed)) return 'scheduled';
   return 'stopped';
@@ -153,6 +158,13 @@ function scheduleLabel(t) {
   if (t.type === 'cronfile') {
     const n = (t.jobs || []).length;
     return n ? `${n} cron job${n > 1 ? 's' : ''} configured` : 'No cron jobs';
+  }
+  if (t.type === 'hermes') {
+    const m = t.meta || {};
+    const parts = [];
+    if (m.schedule) parts.push(m.schedule);
+    if (m.nextRun && m.nextRun !== '—') parts.push(`Next: ${m.nextRun}`);
+    return parts.length ? parts.join(' · ') : 'Hermes job';
   }
   const p = t.parsed || {};
   if (p.StartCalendarInterval) {
@@ -191,6 +203,11 @@ function fmtDur(sec) {
 }
 function programPreview(t) {
   if (t.type === 'cronfile') return 'cron(8) scheduler';
+  if (t.type === 'hermes') {
+    const m = t.meta || {};
+    if (m.promptPreview) return m.promptPreview;
+    return 'Hermes Agent job';
+  }
   const p = t.parsed || {};
   const args = p.ProgramArguments;
   if (Array.isArray(args)) return args.join(' ');
@@ -267,8 +284,9 @@ function taskCard(t) {
   const iconBg = {
     'user-agents': 'var(--green-bg)', 'system-agents': 'var(--blue-bg)',
     'system-daemons': 'var(--purple-bg)', 'user-cron': 'var(--amber-bg)', 'system-cron': 'var(--red-bg)',
+    'hermes-cron': 'var(--sky-bg)',
   }[t.source] || 'var(--bg-soft)';
-  const icon = isCron ? '🗓' : '⚙';
+  const icon = isCron ? '🗓' : (t.type === 'hermes' ? '🤖' : '⚙');
 
   const statusBadge = st === 'running' ? '<span class="card-status status-running">● Running</span>'
     : st === 'scheduled' ? '<span class="card-status status-scheduled">● Scheduled</span>'
@@ -308,8 +326,9 @@ function taskRow(t) {
   const iconBg = {
     'user-agents': 'var(--green-bg)', 'system-agents': 'var(--blue-bg)',
     'system-daemons': 'var(--purple-bg)', 'user-cron': 'var(--amber-bg)', 'system-cron': 'var(--red-bg)',
+    'hermes-cron': 'var(--sky-bg)',
   }[t.source] || 'var(--bg-soft)';
-  const icon = isCron ? '🗓' : '⚙';
+  const icon = isCron ? '🗓' : (t.type === 'hermes' ? '🤖' : '⚙');
   const statusBadge = st === 'running' ? '<span class="card-status status-running">● Running</span>'
     : st === 'scheduled' ? '<span class="card-status status-scheduled">● Scheduled</span>'
     : st === 'stopped' ? '<span class="card-status status-stopped">■ Stopped</span>'
@@ -340,9 +359,11 @@ async function openDrawer(id) {
   const t = state.tasks.find((x) => x.id === id);
   if (!t) return;
   state.isCron = t.type === 'cronfile';
+  state.isHermes = t.type === 'hermes';
 
-  $('#dType').textContent = t.type === 'cronfile' ? 'CRON' : 'LAUNCHD';
-  $('#dType').className = 'drawer-type-badge' + (t.type === 'cronfile' ? ' cron' : '');
+  $('#dType').textContent = t.type === 'cronfile' ? 'CRON' : (t.type === 'hermes' ? 'HERMES' : 'LAUNCHD');
+  $('#dType').className = 'drawer-type-badge' + (t.type === 'cronfile' ? ' cron' : (t.type === 'hermes' ? ' hermes' : ''));
+
   $('#dLabel').textContent = t.label || t.name;
   $('#dFile').textContent = t.file || '';
   $('#drawer').hidden = false;
@@ -352,6 +373,8 @@ async function openDrawer(id) {
 
   if (t.type === 'cronfile') {
     renderCronDrawer(body, t);
+  } else if (t.type === 'hermes') {
+    renderHermesDrawer(body, t);
   } else {
     renderLaunchdDrawer(body, t);
   }
@@ -440,7 +463,7 @@ function drawerInfoBlocks(t) {
         <div class="info-item"><label>Source</label><div class="val">${esc(sourceMeta(t.source).name)}</div></div>
         <div class="info-item full"><label>Label</label><div class="val mono">${esc(t.label || '—')}</div></div>
         <div class="info-item full"><label>File</label><div class="val mono">${esc(t.file)}</div></div>
-        <div class="info-item"><label>Type</label><div class="val">${t.type === 'cronfile' ? 'Cron table' : 'Launchd plist'}</div></div>
+        <div class="info-item"><label>Type</label><div class="val">${t.type === 'cronfile' ? 'Cron table' : t.type === 'hermes' ? 'Hermes Agent Job' : 'Launchd plist'}</div></div>
         ${t.meta ? `<div class="info-item"><label>Modified</label><div class="val">${fmtTime(t.meta.mtime)}</div></div>` : ''}
         ${t.meta ? `<div class="info-item"><label>Size</label><div class="val">${t.meta.size} bytes</div></div>` : ''}
       </div>
@@ -783,6 +806,85 @@ async function saveCrontab() {
     await refresh();
     await openDrawer(t.id);
   } catch (e) { toast('Save failed: ' + e.message, 'error', 6000); }
+}
+
+// ---------- Hermes Drawer ----------
+function renderHermesDrawer(body, t) {
+  const j = t.parsed || {};
+  const m = t.meta || {};
+  const promptText = String(j.prompt || '').slice(0, 800);
+  const isEnabled = j.enabled === true;
+
+  body.innerHTML = `
+    ${drawerInfoBlocks(t)}
+    <div class="section">
+      <div class="section-title">Hermes Job Details</div>
+      <div class="drawer-meta-row">
+        <div class="drawer-meta-item">
+          <div class="drawer-meta-key">Schedule</div>
+          <div class="drawer-meta-val">${esc(m.schedule || '—')}</div>
+        </div>
+        <div class="drawer-meta-item">
+          <div class="drawer-meta-key">Status</div>
+          <div class="drawer-meta-val">${esc(t.status || '—')}</div>
+        </div>
+        <div class="drawer-meta-item">
+          <div class="drawer-meta-key">Runs Completed</div>
+          <div class="drawer-meta-val">${esc(String(m.repeat || '0'))}</div>
+        </div>
+        <div class="drawer-meta-item">
+          <div class="drawer-meta-key">Delivery</div>
+          <div class="drawer-meta-val">${esc(m.deliver || '—')}</div>
+        </div>
+      </div>
+      <div class="drawer-meta-row" style="margin-top:10px">
+        <div class="drawer-meta-item">
+          <div class="drawer-meta-key">Next Run</div>
+          <div class="drawer-meta-val">${esc(m.nextRun || '—')}</div>
+        </div>
+        <div class="drawer-meta-item">
+          <div class="drawer-meta-key">Last Run</div>
+          <div class="drawer-meta-val">${esc(m.lastRun || '—')}</div>
+        </div>
+        <div class="drawer-meta-item">
+          <div class="drawer-meta-key">Last Status</div>
+          <div class="drawer-meta-val">${esc(m.lastStatus || '—')}</div>
+        </div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Prompt</div>
+      <div style="white-space:pre-wrap;font-size:13px;font-family:var(--font-mono,monospace);background:var(--bg-soft);padding:12px;border-radius:8px;max-height:300px;overflow:auto;border:1px solid var(--border)">${esc(promptText)}${promptText.length >= 800 ? '…' : ''}</div>
+    </div>
+    <div class="drawer-actions-sticky" style="margin-top:16px">
+      <button class="btn btn-primary" id="hRunBtn">▶ Run Now</button>
+      <button class="btn btn-warning" id="hPauseBtn" style="display:${isEnabled ? 'inline-flex' : 'none'}">⏸ Pause</button>
+      <button class="btn btn-success" id="hResumeBtn" style="display:${isEnabled ? 'none' : 'inline-flex'}">▶ Resume</button>
+    </div>
+    <div class="hint" style="margin-top:8px">Hermes jobs are read-only in Mac Scheduler. Use <code>hermes cron</code> CLI for full control.</div>
+  `;
+
+  $('#hRunBtn').addEventListener('click', async () => {
+    try {
+      await api('/job/' + encodeURIComponent(t.id), { method: 'POST', body: JSON.stringify({ action: 'run' }) });
+      toast('Job triggered: ' + t.name, 'success');
+      await refresh(); await openDrawer(t.id);
+    } catch (e) { toast(e.message, 'error', 6000); }
+  });
+  $('#hPauseBtn').addEventListener('click', async () => {
+    try {
+      await api('/job/' + encodeURIComponent(t.id), { method: 'POST', body: JSON.stringify({ action: 'pause' }) });
+      toast('Job paused: ' + t.name, 'success');
+      await refresh(); await openDrawer(t.id);
+    } catch (e) { toast(e.message, 'error', 6000); }
+  });
+  $('#hResumeBtn').addEventListener('click', async () => {
+    try {
+      await api('/job/' + encodeURIComponent(t.id), { method: 'POST', body: JSON.stringify({ action: 'resume' }) });
+      toast('Job resumed: ' + t.name, 'success');
+      await refresh(); await openDrawer(t.id);
+    } catch (e) { toast(e.message, 'error', 6000); }
+  });
 }
 
 // ---------- Modal ----------
